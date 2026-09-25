@@ -46,7 +46,18 @@ public unsafe class GameRenderer : IDisposable
     /// outside the client area and so reserves nothing; Linux and macOS get UI.MenuBar drawn
     /// into this strip, which is what keeps it off the top row of tiles.
     /// </summary>
-    public static readonly int MenuBarHeight = OperatingSystem.IsWindows() ? 0 : UI.MenuBar.Height;
+    public static int MenuBarHeight { get; private set; } = OperatingSystem.IsWindows() ? 0 : UI.MenuBar.Height;
+
+    /// <summary>
+    /// Collapses or restores the strip the in-engine menu bar lives in, resizing the window
+    /// so the game keeps its size. Nothing to do on Windows, whose menu is outside the window.
+    /// </summary>
+    public void SetMenuBarStrip(bool visible)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        MenuBarHeight = visible ? UI.MenuBar.Height : 0;
+        SetWindowScale(_currentScale);
+    }
 
     /// <summary>The whole logical window: the game area plus whatever the menu bar reserves.</summary>
     public static int LogicalHeight => WindowHeight + MenuBarHeight;
@@ -273,6 +284,22 @@ public unsafe class GameRenderer : IDisposable
         _font = new BitmapFont();
     }
 
+    /// <summary>
+    /// Every window's renderer comes from here. A machine with no GPU-backed driver (a VM,
+    /// remote X, a bare Linux box) has no accelerated renderer at all, so fall back to
+    /// software rather than refuse to open - the game loop's frame limiter paces it anyway.
+    /// </summary>
+    public static SDLRenderer* CreateRenderer(SDLWindow* window)
+    {
+        SDLRenderer* renderer = SDL.CreateRenderer(window, -1,
+            (uint)(SDLRendererFlags.Accelerated | SDLRendererFlags.Presentvsync));
+        if (renderer != null)
+            return renderer;
+
+        Console.WriteLine($"Accelerated renderer unavailable ({SDL.GetErrorS()}), using software");
+        return SDL.CreateRenderer(window, -1, (uint)SDLRendererFlags.Software);
+    }
+
     public bool Initialize(string title = "Yoda Stories NG")
     {
         if (SDL.Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0)
@@ -295,8 +322,7 @@ public unsafe class GameRenderer : IDisposable
             return false;
         }
 
-        _renderer = SDL.CreateRenderer(_window, -1,
-            (uint)(SDLRendererFlags.Accelerated | SDLRendererFlags.Presentvsync));
+        _renderer = CreateRenderer(_window);
 
         if (_renderer == null)
         {

@@ -138,10 +138,9 @@ Indiana Jones and a `.dta` extension for Yoda Stories.
 Indiana Jones loads, parses, renders and plays with the correct palette and animation
 cycles. What it does not do yet:
 
-- **World generation produces no mission chain.** The generator is written around Yoda
-  Stories' Dagobah-and-planets structure and logs `No Dagobah zones found!` on a
-  `.daw` world. You get a browsable world of real zones, but no puzzle sequence to solve.
-- **The mission bot cannot play it**, for the same reason.
+- **The mission bot cannot solve it.** Indiana Jones worlds are generated with a full
+  puzzle chain (see [WORLD-GENERATION.md](WORLD-GENERATION.md#indiana-jones-the-original-algorithm)),
+  but the bot's solver is written around Yoda and R2-D2, so on Indy it only explores.
 - **The title screen has no biplane.** The X-Wing flyby is driven by four known tile IDs
   (948-951); the equivalent biplane tiles have not been identified, so Indiana Jones gets a
   static title screen. See `src/YodaStoriesNG.Engine/UI/TitleScreen.cs`.

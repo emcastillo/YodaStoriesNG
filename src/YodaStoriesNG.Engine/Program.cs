@@ -10,6 +10,10 @@ class Program
         if (args.Contains("--self-test"))
             return Dev.SelfTest.Run();
 
+        // Headless: generate many worlds from a data file and report how they went.
+        if (args.Length >= 2 && args[0] == "--generate")
+            return Dev.GenerateWorlds.Run(args[1], args.Length >= 3 ? int.Parse(args[2]) : 200);
+
         Console.WriteLine("========================================");
         Console.WriteLine("     Yoda Stories NG");
         Console.WriteLine("     An open-source reimplementation");

@@ -12,6 +12,12 @@ public class KeyBindings
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "YodaStoriesNG", "keybindings.json");
 
+    /// <summary>
+    /// Not a key binding, but this is the settings file the game already keeps: whether
+    /// the player put the menu bar away (a controller player usually will).
+    /// </summary>
+    public bool HideMenuBar { get; set; }
+
     // Action names (used as keys in the dictionary)
     public const string MoveUp = "MoveUp";
     public const string MoveDown = "MoveDown";

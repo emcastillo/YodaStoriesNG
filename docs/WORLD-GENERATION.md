@@ -128,9 +128,7 @@ between missions, and where R2-D2 waits to be collected.
 
 Each placed sector needs an actual zone from the data file, matching the sector's type and
 the mission's planet, of the right size, and not already used. This is a filtered pick over
-all 658 zones, and it is where generation can fail on Indiana Jones data - the filters are
-written around Yoda Stories' planet structure. See
-[GAME-DATA.md](GAME-DATA.md#indiana-jones-caveats).
+all 658 zones. Indiana Jones does not go through this generator at all - see below.
 
 ### Step 4: chain the puzzles backwards
 
@@ -190,6 +188,46 @@ progress. `I` dumps the current zone's full state to the console. Both are in
 [DEBUG-TOOLS.md](DEBUG-TOOLS.md).
 
 ---
+
+## Indiana Jones: the original algorithm
+
+Indiana Jones worlds come from `Game/OriginalWorldGenerator.cs`, a port of WebFun's
+`generation/world-generator.ts`, which reconstructs the original games' own generator. It
+works from exactly what the data file says about each zone - its type, the items it
+requires and provides, its NPCs, and the hotspots those can be placed in:
+
+1. `MapGenerator` lays out the 10x10 grid: puzzle sectors in order, blockades, travel.
+2. A Mission puzzle is picked whose item some Goal zone provides.
+3. The chain is walked **backwards** from it. Each puzzle sector gets a Trade or Use zone
+   whose item lists can take the previous step's item and give this one's, choosing a
+   puzzle of the matching type as it goes, and the items and NPCs are written into that
+   zone's hotspots.
+4. Travel, blockade, town, find and filler zones fill the rest, each blockade and travel
+   adding an item the player must find somewhere.
+
+A seed that cannot be completed is abandoned and another tried, as the original does -
+about 7% of seeds on Indiana Jones.
+
+**Yoda Stories builds two strains** that converge on a Mission needing two items, the
+second found through a zone's goal-item list. Indiana Jones has neither: its Mission
+puzzles carry one item, its zones no goal-item list, and each of its 15 Goal zones provides
+exactly one Mission item while requiring one Goal-type (`GW`) puzzle's item. So Indiana
+Jones runs the same algorithm with the second strain switched off. That rule is decoded
+from the data; WebFun gives Indy puzzles no type at all and cannot generate an Indy world.
+
+Scripts then ask the zone's sector what its puzzle needs and gives (`RequiredItemIs`,
+`FindItemIs`, `HasItem -1`, `DropItem -1` and friends), through `WorldMap.Sectors`.
+
+To exercise it without a window:
+
+```bash
+dotnet run --project src/YodaStoriesNG.Engine -- --generate INDYDESK/DESKTOP.DAW 300
+```
+
+which reports how many seeds succeed, why the rest failed, and one world's chain.
+
+Yoda Stories still uses the older generator above. The same port runs on Yoda's data
+(about 95% of seeds succeed), so switching Yoda over is a decision, not new work.
 
 ## Related documents
 

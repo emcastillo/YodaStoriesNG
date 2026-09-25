@@ -37,11 +37,16 @@ public class CharacterFrames
     public ushort[] ExtensionRight { get; set; } = Array.Empty<ushort>();
 }
 
+/// <summary>
+/// The file stores 1 Hero, 2 Enemy, 4 Weapon. Friendly is the engine's own - Yoda Stories'
+/// characters are still classified by name (see DtaParser.InferCharacterType).
+/// </summary>
 public enum CharacterType : ushort
 {
     Hero = 0x01,
     Enemy = 0x02,
-    Friendly = 0x04,
+    Weapon = 0x04,
+    Friendly = 0x100,
 }
 
 /// <summary>
@@ -49,7 +54,11 @@ public enum CharacterType : ushort
 /// </summary>
 public class CharacterWeapon
 {
-    public ushort Reference { get; set; }
+    /// <summary>
+    /// -1 for none. On an enemy, the index of the weapon character it fires; on a weapon
+    /// character, the sound it makes.
+    /// </summary>
+    public short Reference { get; set; }
     public ushort Health { get; set; }
 }
 
@@ -58,5 +67,5 @@ public class CharacterWeapon
 /// </summary>
 public class CharacterAux
 {
-    public ushort Damage { get; set; }
+    public short Damage { get; set; }  // -1 for none
 }

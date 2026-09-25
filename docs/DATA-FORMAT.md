@@ -42,7 +42,7 @@ engine does not know about still loads.
 | 2 | `STUP` | The title screen image |
 | 3 | `SNDS` | Sound file names |
 | 4 | `TILE` | Every 32x32 tile |
-| 5 | `ZONE` | Every zone, with its scripts |
+| 5 | `ZONE` | Every zone. Yoda: with its scripts. Indiana Jones: tiles only, the rest in `ZAUX`..`ACTN` straight after |
 | 6 | `PUZ2` | Puzzle definitions |
 | 7 | `CHAR` | Characters |
 | 8 | `CHWP` | Character weapons |
@@ -80,7 +80,9 @@ becomes the title screen background under the flyby animation.
 
 A list of file names, not audio. The actual `.wav` files sit next to the data file on disk
 (`sfx/` for Yoda Stories, the game directory itself for Indiana Jones). `PlaySound`
-instructions index into this list.
+instructions index into this list. Indiana Jones stores full paths from its developers'
+machines (`\INDY\MASTER\PUSH.WAV`), so only the last component means anything. Four of
+its eighteen entries are MIDI music, which the engine does not play.
 
 ---
 
@@ -128,81 +130,106 @@ The Asset Viewer (`F4`) filters the atlas by exactly these flags.
 
 ## `ZONE` - zones and their scripts
 
-The largest section by far, and the most involved.
+The largest section by far, and the one where the two games differ most. Yoda Stories
+keeps everything about a zone in one record. Indiana Jones keeps only the tiles in `ZONE`
+and stores the rest in separate sections that follow it (below). Every layout here is
+WebFun's (`file-format/categories/zone.ts`), and the parser's totals match an independent
+parse of both retail files: 658 Yoda zones and 366 Indiana Jones zones.
 
-It opens with a `uint16` count and a `uint16` of padding. **The count is unreliable** - the
-parser reads it and then ignores it, scanning forward for `IZON` markers instead and
-stopping when it hits the tag of the next top-level section. Yoda Stories yields 658 zones
-this way.
+```
+Yoda Stories                            Indiana Jones
+"ZONE"  (no length)                     "ZONE"  uint32 length
+count   uint16                          count   uint16
+per zone:                               per zone:
+  planet   uint16                         IZON
+  size     uint32  (bytes after this)
+  index    uint16
+  IZON
+  hotspots
+  IZAX, IZX2, IZX3, IZX4
+  actionCount uint16, IACT x N
+```
 
-Each zone is an `IZON` record followed by a run of optional sub-sections.
+The count is exact. The parser reads records by it and stops at the first marker that is
+not where the layout says, rather than scanning for markers - an earlier scanning parser
+"found" 27 Indiana Jones zones that way and misread most of the rest.
 
-### `IZON` header
+### `IZON` header and tiles
 
 ```
 "IZON"           4 bytes
-size             uint32     (record size; not needed, the layout is self-describing)
+size             uint32     (not needed)
 width            uint16     (9 or 18)
-height           uint16     (9 or 18)
-flags            uint8      (ZoneFlags)
-padding          5 bytes
-planet           uint8      (Planet)
-unused           1 byte
+height           uint16
+type             uint32     (ZoneType - Town, Goal, Trade, ...)
+sectorCounter    uint16     Yoda only
+planet           uint16     Yoda only, repeats the one before IZON
+tiles            width x height x 3 uint16, in y, x, layer order
 ```
 
-`width` and `height` are validated: anything zero or above 18 marks the zone as empty and
-the parser resyncs. This is the guard rail that keeps a slightly-off offset from cascading
-into hundreds of garbage zones.
+**Planet** is Yoda-only and doubles as tile-set identity: `1` Desert (Tatooine), `2` Snow
+(Hoth), `3` Forest (Endor), `5` Swamp (Dagobah). There is no 4.
 
-**Planet** doubles as tile-set identity: `1` Desert (Tatooine), `2` Snow (Hoth), `3` Forest
-(Endor), `5` Swamp (Dagobah). There is no 4.
+**Type** is what world generation selects zones by. The values run `0` None, `1` Empty,
+`2`-`5` Blockade N/S/E/W, `6` TravelStart, `7` TravelEnd, `8` Room, `9` Load, `10` Goal,
+`11` Town, `12` (Indiana Jones only, unused by its data), `13` Win, `14` Lose, `15` Use,
+`16` Trade, `17` Find, `18` FindUniqueWeapon.
 
-### The tile grid
+Tile ID `0xFFFF` means "nothing here". An 18x18 zone is 1,944 bytes of grid.
 
-Immediately after the header, `width x height x 3` `uint16` tile IDs, in `y`, `x`, `layer`
-order:
-
-```
-for y in 0..height:
-  for x in 0..width:
-    layer0 (floor)   uint16
-    layer1 (object)  uint16
-    layer2 (roof)    uint16
-```
-
-An 18x18 zone is therefore 1,944 bytes of grid. Tile ID `0xFFFF` means "nothing here".
-
-### Zone objects
+### Hotspots
 
 A `uint16` count, then that many 12-byte records:
 
 ```
-type       uint16   (ZoneObjectType)
-padding    uint16
-x          uint16
-y          uint16
-padding    uint16
-argument   uint16   (meaning depends on type)
+type       uint32   (ZoneObjectType)
+x          int16
+y          int16
+enabled    uint16
+argument   int16    (meaning depends on type)
 ```
 
-`argument` is context-dependent: a tile ID for an item, a destination zone ID for a door, a
-character ID for an NPC. `ZoneObjectType` is in `src/YodaStoriesNG.Engine/Data/Zone.cs`.
+`argument` is a tile ID for an item, a destination zone ID for a door, a character ID for
+an NPC.
 
-### Zone sub-sections
+### `IZAX`, `IZX2`, `IZX3`, `IZX4`
 
-After the objects, a run of tagged sub-records until a tag the parser does not recognise -
-which is how it knows the next zone (or the next top-level section) has started.
+Each starts with its marker and a `uint32` size that counts the eight header bytes.
 
 | Tag | Payload |
 |---|---|
-| `IZAX` | NPC spawns with the items they carry. Parsed into `ZoneAuxData`. |
-| `IZX2` | Auxiliary data, kept raw. |
-| `IZX3` | Auxiliary data, kept raw. |
-| `IZX4` | Fixed 8 bytes, kept raw. |
-| `IACT` | One action script. A zone may have many. |
+| `IZAX` | `uint16` unknown, `uint16` monster count and the monsters, then a counted list of `uint16` required items, then (Yoda only) a counted list of goal items. |
+| `IZX2` | A counted list of `uint16` items the zone can provide. |
+| `IZX3` | A counted list of `uint16` NPC characters that can appear. |
+| `IZX4` | One `uint16`, meaning unknown. |
 
-`IZAX`, `IZX2` and `IZX3` carry a `uint16` length that **includes its own six-byte header**,
-so the payload is `length - 6`. `IZX4` has no length at all - it is always eight bytes.
+A monster is 44 bytes in Yoda Stories and 6 in Indiana Jones:
+
+```
+character  uint16                          both
+x, y       uint16 x 2                      both
+loot       int16    tile + 1, 0/-1 = none  Yoda
+dropsLoot  uint32                          Yoda
+waypoints  int32 x 8                       Yoda
+```
+
+When a monster that `dropsLoot` dies it drops tile `loot - 1`, or the zone's quest item if
+`loot` is not positive (WebFun `bullet-move.ts`).
+
+### Indiana Jones' per-zone sections
+
+These follow `ZONE`, each with a `uint32` length:
+
+| Tag | Layout |
+|---|---|
+| `ZAUX` | One `IZAX` per zone, in zone order |
+| `ZAX2` | One `IZX2` per zone |
+| `ZAX3` | One `IZX3` per zone |
+| `ZAX4` | One `IZX4` per zone |
+| `HTSP` | `int16` zone id, then hotspots as above; repeats until zone id `-1` |
+| `ACTN` | `int16` zone id, `uint16` count, that many `IACT`; until `-1` |
+| `ZNAM` | `int16` zone id, 16-byte name ("Cairo"); until `-1` |
+| `PNAM`, `ANAM` | Puzzle and action names. Not read. |
 
 ### `IACT` - action scripts
 
@@ -210,7 +237,7 @@ This is the one that repays care. The layout:
 
 ```
 "IACT"                  4 bytes
-size                    uint32
+size                    uint32   (Indiana Jones always writes 0 - trust the counts)
 conditionCount          uint16
   condition x N         (see below)
 instructionCount        uint16
@@ -242,9 +269,30 @@ The opcodes themselves are [SCRIPTING.md](SCRIPTING.md).
 
 ## `PUZ2` - puzzles
 
-Puzzle definitions, scanned for `IPUZ` markers the same way zones are scanned for `IZON`.
-Each puzzle carries a type and a set of strings: what the NPC says when you do not have the
-item, what they say when you do, and the item IDs involved.
+A list of `int16` index (`-1` ends it), `"IPUZ"`, `uint32` size, then:
+
+```
+                 Yoda Stories      Indiana Jones
+type             uint32            uint32
+item1 class      uint32            uint32
+item2 class      uint32            -
+unknown          uint16            uint16
+strings          5 x (uint16 length, text)
+item1            uint16            uint16
+item2            uint16            -
+```
+
+**Type** is `0` Transaction (an NPC trades), `1` Offer, `2` Goal (the steps just before the
+end), `3` Mission (the end puzzle a world is built around), `-1` disabled. Yoda Stories has
+73/74/43/15 of them; Indiana Jones 49/49/43/15 and one disabled.
+
+WebFun and its Kaitai spec read Indiana Jones' first field as an item class and give every
+Indy puzzle no type. It is the type. Every Indy puzzle's `PNAM` name ends in a suffix that
+matches it without exception - `TX` 0, `KL` 1, `GW` 2, `GO` 3 - and the 15 `GO` puzzles pair
+one-to-one with Indiana Jones' 15 Goal zones.
+
+The strings are what NPCs say: for a Transaction, `0` is "I need X" and `1` the thanks; `2`
+is the giver's offer; a Mission's `2` is the briefing ("Find the JAGUAR CODEX, Indy!").
 
 These are the raw material the world generator chains together into a mission. See
 [WORLD-GENERATION.md](WORLD-GENERATION.md).
@@ -257,8 +305,21 @@ These are the raw material the world generator chains together into a mission. S
 animation frames - eight walking frames per direction, plus attack frames. Yoda Stories has
 77 characters.
 
-`CHWP` maps characters to their weapons. `CAUX` holds auxiliary per-character data, chiefly
-damage and health values.
+`CHWP` and `CAUX` are lists keyed by character index, not arrays in character order. Each
+entry starts with an `int16` index, and an index of `-1` ends the list:
+
+| Section | Entry after the index |
+|---|---|
+| `CHWP` | `int16 reference`, `uint16 health` |
+| `CAUX` | `int16 damage` |
+
+`reference` means two different things. On an enemy it is the index of the weapon
+*character* that enemy fires (every Stormtrooper points at "Imperial Blaster"). On a weapon
+character it is the `SNDS` index of the sound that weapon makes. `-1` means none.
+
+`CHAR` records are not a fixed size either: each one is `"ICHA"` plus a `uint32` size.
+Yoda Stories has six more bytes before the animation frames than Indiana Jones does. The
+last slot of a weapon character's first frame is the inventory tile it is equipped from.
 
 ---
 
@@ -266,6 +327,9 @@ damage and health values.
 
 Maps tile IDs to human-readable names ("Lightsaber", "Bacta Tank"). Every dialogue line and
 debug view that names an item reads from here. Not every tile has one.
+
+A list of `int16` tile id (`-1` ends it) and a NUL-padded name in a fixed-width field: 24
+bytes in Yoda Stories (246 names), 16 in Indiana Jones (143).
 
 ---
 

@@ -57,6 +57,9 @@ public unsafe class MenuBar : IMenuBar
     public event Action? OnSelectDataFile;
     public event Action? OnShowAbout;
     public event Action? OnShowHighScores;
+    public event Action? OnHideMenuBar;
+
+    public bool Visible { get; set; } = true;
 
     public bool IsMenuOpen => _openMenu >= 0;
 
@@ -113,6 +116,8 @@ public unsafe class MenuBar : IMenuBar
                     new Item("Controller Controls", () => OnShowControllerControls?.Invoke()),
                     Divider(),
                     new Item("Select Data File...", () => OnSelectDataFile?.Invoke()),
+                    Divider(),
+                    new Item("Hide Menu Bar (F10 shows it)", () => OnHideMenuBar?.Invoke()),
                 },
             },
             new Menu
@@ -161,6 +166,7 @@ public unsafe class MenuBar : IMenuBar
     public bool HandleEvent(SDLEvent* evt)
     {
         var type = (SDLEventType)evt->Type;
+        if (!Visible) return false; // the engine brings it back on F10
 
         if (type == SDLEventType.Mousebuttondown && evt->Button.WindowID != _windowId) return false;
         if (type == SDLEventType.Mousemotion && evt->Motion.WindowID != _windowId) return false;
@@ -175,12 +181,66 @@ public unsafe class MenuBar : IMenuBar
                 HandleHover(evt->Motion.X, evt->Motion.Y);
                 return false;
 
-            case SDLEventType.Keydown when evt->Key.Keysym.Sym == Escape && IsMenuOpen:
+            case SDLEventType.Keydown:
+                return HandleKey(evt->Key.Keysym.Sym);
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// F10 opens the bar and the arrows walk it, which a Windows menu does for free. While
+    /// a dropdown is open it eats navigation keys, so the player does not walk underneath.
+    /// </summary>
+    private bool HandleKey(int key)
+    {
+        if (key == (int)SDLKeyCode.F10)
+        {
+            if (IsMenuOpen) Close();
+            else { _openMenu = 0; _hoveredItem = StepItem(0, -1, 1); }
+            return true;
+        }
+
+        if (!IsMenuOpen)
+            return false;
+
+        switch (key)
+        {
+            case Escape:
                 Close();
+                return true;
+            case (int)SDLKeyCode.Left:
+            case (int)SDLKeyCode.Right:
+                _openMenu = (_openMenu + (key == (int)SDLKeyCode.Left ? -1 : 1) + _menus.Length) % _menus.Length;
+                _hoveredItem = StepItem(_openMenu, -1, 1);
+                return true;
+            case (int)SDLKeyCode.Up:
+            case (int)SDLKeyCode.Down:
+                _hoveredItem = StepItem(_openMenu, _hoveredItem, key == (int)SDLKeyCode.Up ? -1 : 1);
+                return true;
+            case (int)SDLKeyCode.Return:
+            case (int)SDLKeyCode.KpEnter:
+                var run = _hoveredItem >= 0 ? _menus[_openMenu].Items[_hoveredItem].Run : null;
+                Close();
+                run?.Invoke();
                 return true;
         }
 
         return false;
+    }
+
+    /// <summary>Next selectable item from <paramref name="from"/> in <paramref name="step"/>'s direction, wrapping and skipping dividers.</summary>
+    private int StepItem(int menuIndex, int from, int step)
+    {
+        var items = _menus[menuIndex].Items;
+        int i = from < 0 && step < 0 ? items.Length : from;
+        for (int n = 0; n < items.Length; n++)
+        {
+            i = (i + step + items.Length) % items.Length;
+            if (!IsDivider(items[i]))
+                return i;
+        }
+        return -1;
     }
 
     private bool HandleClick(int x, int y)
@@ -255,7 +315,7 @@ public unsafe class MenuBar : IMenuBar
 
     public void Render()
     {
-        if (_renderer == null)
+        if (_renderer == null || !Visible)
             return;
 
         SDL.SetRenderDrawColor(_renderer, 45, 48, 55, 255);

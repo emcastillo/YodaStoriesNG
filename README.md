@@ -36,10 +36,11 @@ scripting language - and reading it back out is the only way to see how it works
 item-chain puzzles, combat, scoring, save and load. All 36 condition and 38 instruction
 opcodes are implemented.
 
-**Indiana Jones parses, renders and plays, but generates no mission chain** - the world
-generator is still written around Yoda Stories' planet structure, so you get a real world of
-real zones with nothing to solve. That is the biggest open item on the
-[roadmap](docs/ROADMAP.md).
+**Indiana Jones generates real missions.** Marcus briefs you in the town, the chain of
+trades and puzzle rooms leads to a temple and the artefact - built by a port of the original
+world generator, with Indy's own script opcodes and puzzle types decoded from its data (see
+[WORLD-GENERATION.md](docs/WORLD-GENERATION.md)). The bot plays the first steps of a
+chain but does not finish one yet; that is the top of the [roadmap](docs/ROADMAP.md).
 
 ```
 2,123 tiles      658 zones      205 puzzles      8,696 scripts      77 characters
@@ -112,7 +113,11 @@ Traps this format sets, each paid for once already:
   exactly like Yoda Stories. Trust the file name.
 - **`TileAtIs` and `IsVariable` put the tile in slot 0** and the position after it, unlike
   every other tile opcode.
-- **The zone count in the `ZONE` header is wrong.** Scan for `IZON` markers instead.
+- **The zone count in the `ZONE` header is right; scanning for `IZON` markers is wrong.**
+  The scan found 27 of Indiana Jones' 366 zones. Read by the counts.
+- **Indiana Jones is not Yoda Stories with other art.** Its script opcodes are numbered
+  differently, its zones keep their scripts in separate sections, and the field its puzzles'
+  documentation calls an item class is the puzzle type.
 - **Read the backbuffer before `RenderPresent`, not after** - which is why every window
   flushes its own screenshot rather than the game loop doing it centrally.
 - **A single-file publish needs `IncludeAllContentForSelfExtract`, not just

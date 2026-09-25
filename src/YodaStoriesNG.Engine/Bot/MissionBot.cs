@@ -176,8 +176,11 @@ public class MissionBot
         _thinkTimer = 0;
 
         // Check for immediate threats (enemies nearby)
+        // Indiana Jones' monsters hit hard and come back when a zone is re-entered, so on
+        // those worlds only fight what is about to be a problem and keep moving otherwise.
+        int threat = _worldGenerator.CurrentWorld is { Sectors.Count: > 0 } ? (_solver.HuntEnemies ? 15 : 3) : 6;
         var enemy = _solver.FindNearestEnemy();
-        if (enemy != null && enemy.DistanceTo(_state.PlayerX, _state.PlayerY) <= 6)
+        if (enemy != null && enemy.DistanceTo(_state.PlayerX, _state.PlayerY) <= threat)
         {
             Console.WriteLine($"[BOT] Enemy detected: {GetNpcName(enemy)} at ({enemy.X},{enemy.Y})!");
             _currentState = BotState.Combat;
@@ -306,6 +309,19 @@ public class MissionBot
                 _currentState = BotState.Combat;
                 break;
 
+            case ObjectiveType.PushObject:
+            case ObjectiveType.PullObject:
+                bool pull = objective.Type == ObjectiveType.PullObject;
+                Console.WriteLine($"[BOT] {(pull ? "Pulling" : "Pushing")} block at ({objective.TargetX},{objective.TargetY}) {objective.Direction}");
+                if (objective.Direction is not { } pushDir ||
+                    !(pull ? _actions.PullObject(objective.TargetX, objective.TargetY, pushDir)
+                           : _actions.PushObject(objective.TargetX, objective.TargetY, pushDir)))
+                {
+                    _solver.MarkUnreachable(objective.TargetX, objective.TargetY);
+                    _currentState = BotState.ThinkingAboutObjective;
+                }
+                break;
+
             case ObjectiveType.WalkToPosition:
                 // Walk directly to a position (e.g., to collect R2D2 after talking)
                 Console.WriteLine($"[BOT] Walking to position ({objective.TargetX},{objective.TargetY})");
@@ -415,6 +431,14 @@ public class MissionBot
         }
 
         int dist = enemy.DistanceTo(_state.PlayerX, _state.PlayerY);
+
+        // Indiana Jones worlds: the threat is dealt with once nothing is close; don't go hunting.
+        if (_worldGenerator.CurrentWorld is { Sectors.Count: > 0 } && dist > 3 && !_solver.HuntEnemies)
+        {
+            _currentState = BotState.ThinkingAboutObjective;
+            _combatApproachAttempts = 0;
+            return;
+        }
 
         // Check if we're making progress
         if (_lastCombatPos == (_state.PlayerX, _state.PlayerY))
@@ -598,65 +622,63 @@ public class MissionBot
     private Direction? _committedExplorationDirection;
     private int _zoneExitAttempts;
 
+    /// <summary>
+    /// Walks off the zone in <paramref name="dir"/>. The engine only lets you cross where the
+    /// tile you leave from and the tile you would land on are both open, so pick the nearest
+    /// such crossing on that edge, walk onto it, then step over.
+    /// </summary>
     private void MoveToZoneEdge(Direction dir)
     {
-        if (_state.CurrentZone == null) return;
-
-        int targetX = _state.PlayerX;
-        int targetY = _state.PlayerY;
-
-        switch (dir)
-        {
-            case Direction.Up:
-                targetY = 1;
-                break;
-            case Direction.Down:
-                targetY = _state.CurrentZone.Height - 2;
-                break;
-            case Direction.Left:
-                targetX = 1;
-                break;
-            case Direction.Right:
-                targetX = _state.CurrentZone.Width - 2;
-                break;
-        }
-
+        var zone = _state.CurrentZone;
+        if (zone == null) return;
         _pendingZoneExitDirection = dir;
 
-        bool nearEdge = dir switch
+        // Nearest open crossing we can actually walk to; an edge is only "blocked" when none
+        // is - and only after forgetting blocks left by monsters that have since moved.
+        for (int attempt = 0; attempt < 2; attempt++)
         {
-            Direction.Up => _state.PlayerY <= 2,
-            Direction.Down => _state.PlayerY >= _state.CurrentZone.Height - 3,
-            Direction.Left => _state.PlayerX <= 2,
-            Direction.Right => _state.PlayerX >= _state.CurrentZone.Width - 3,
-            _ => false
-        };
-
-        if (nearEdge)
-        {
-            var connected = _worldGenerator.GetConnectedZone(_state.CurrentZoneId, dir);
-            Console.WriteLine($"[BOT] At edge, walking {dir}. Connected zone: {connected?.ToString() ?? "none"}");
-            OnActionRequested?.Invoke(BotActionType.Move, 0, 0, dir);
-        }
-        else
-        {
-            var nearest = _pathfinder.FindNearestWalkable(_state.CurrentZone, targetX, targetY, _state.ZoneNPCs, _state.CurrentZoneId);
-            if (nearest.HasValue)
+            foreach (var (x, y) in FindCrossings(zone, dir))
             {
-                if (!_actions.MoveTo(nearest.Value.X, nearest.Value.Y))
+                if (_state.PlayerX == x && _state.PlayerY == y)
                 {
-                    // Failed to find path - mark this zone exit as blocked
-                    Console.WriteLine($"[BOT] No path to ({nearest.Value.X},{nearest.Value.Y}), marking exit {dir} blocked");
-                    _solver.MarkExitBlocked(dir);
-                    _pendingZoneExitDirection = null;
+                    Console.WriteLine($"[BOT] At crossing ({x},{y}), walking {dir}");
+                    OnActionRequested?.Invoke(BotActionType.Move, 0, 0, dir);
+                    return;
                 }
+                if (_actions.MoveTo(x, y))
+                    return;
             }
-            else
+            if (!_pathfinder.ForgetTemporaryBlocks())
+                break;
+        }
+
+        Console.WriteLine($"[BOT] No reachable crossing {dir} out of zone {_state.CurrentZoneId}, marking exit blocked");
+        _solver.MarkExitBlocked(dir);
+        _pendingZoneExitDirection = null;
+    }
+
+    private IEnumerable<(int X, int Y)> FindCrossings(Zone zone, Direction dir)
+    {
+        var destId = _worldGenerator.GetConnectedZone(_state.CurrentZoneId, dir);
+        if (destId is not { } id || id < 0 || id >= _gameData.Zones.Count) yield break;
+        var dest = _gameData.Zones[id];
+
+        bool vertical = dir is Direction.Up or Direction.Down;
+        int length = vertical ? zone.Width : zone.Height;
+        int here = vertical ? _state.PlayerX : _state.PlayerY;
+
+        foreach (var i in Enumerable.Range(1, Math.Max(0, length - 2)).OrderBy(i => Math.Abs(i - here)))
+        {
+            var (from, to) = dir switch
             {
-                Console.WriteLine($"[BOT] No walkable position near edge for {dir}, marking exit blocked");
-                _solver.MarkExitBlocked(dir);
-                _pendingZoneExitDirection = null;
-            }
+                Direction.Up => ((i, 0), (i, dest.Height - 1)),
+                Direction.Down => ((i, zone.Height - 1), (i, 0)),
+                Direction.Left => ((0, i), (dest.Width - 1, i)),
+                _ => ((zone.Width - 1, i), (0, i)),
+            };
+            if (_pathfinder.IsWalkable(zone, from.Item1, from.Item2, _state.ZoneNPCs, _state.CurrentZoneId) &&
+                _pathfinder.IsWalkable(dest, to.Item1, to.Item2))
+                yield return from;
         }
     }
 

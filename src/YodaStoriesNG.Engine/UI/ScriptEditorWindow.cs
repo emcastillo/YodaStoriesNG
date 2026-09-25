@@ -106,8 +106,7 @@ public class ScriptEditorWindow : IDisposable
             return;
         }
 
-        _renderer = SDL.CreateRenderer(_window, -1,
-            (uint)(SDLRendererFlags.Accelerated | SDLRendererFlags.Presentvsync));
+        _renderer = Rendering.GameRenderer.CreateRenderer(_window);
 
         if (_renderer == null)
         {

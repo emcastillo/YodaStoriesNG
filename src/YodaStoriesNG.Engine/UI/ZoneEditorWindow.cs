@@ -91,8 +91,7 @@ public unsafe class ZoneEditorWindow : IDisposable
             return;
         }
 
-        _renderer = SDL.CreateRenderer(_window, -1,
-            (uint)(SDLRendererFlags.Accelerated | SDLRendererFlags.Presentvsync));
+        _renderer = Rendering.GameRenderer.CreateRenderer(_window);
 
         if (_renderer == null)
         {
@@ -537,8 +536,11 @@ public unsafe class ZoneEditorWindow : IDisposable
             y += 14;
             _font?.RenderText(_renderer, $"Type: {zone.Type}", 8, y, 1, 150, 150, 170, 255);
             y += 14;
-            _font?.RenderText(_renderer, $"Flags: {zone.Flags}", 8, y, 1, 150, 150, 170, 255);
-            y += 14;
+            if (zone.Name != null)
+            {
+                _font?.RenderText(_renderer, $"Name: {zone.Name}", 8, y, 1, 150, 150, 170, 255);
+                y += 14;
+            }
             _font?.RenderText(_renderer, $"Actions: {zone.Actions.Count}", 8, y, 1, 150, 150, 170, 255);
             y += 14;
             _font?.RenderText(_renderer, $"Objects: {zone.Objects.Count}", 8, y, 1, 150, 150, 170, 255);

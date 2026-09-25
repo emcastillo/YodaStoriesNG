@@ -50,6 +50,17 @@ public class Pathfinder
     }
 
     /// <summary>
+    /// Forgets the temporary blocks - most are an enemy that was standing there and has moved
+    /// on. Returns whether there were any.
+    /// </summary>
+    public bool ForgetTemporaryBlocks()
+    {
+        bool any = _blockedPositions.Count > 0;
+        _blockedPositions.Clear();
+        return any;
+    }
+
+    /// <summary>
     /// Checks if a position is in the blocklist (temporary OR permanent).
     /// </summary>
     public bool IsTemporarilyBlocked(int zoneId, int x, int y)
@@ -139,6 +150,12 @@ public class Pathfinder
                 if (!IsWalkable(zone, nx, ny, npcs, zoneId))
                     continue;
 
+                // A block only gives way if walking into it pushes it somewhere free, which
+                // depends on the direction. (The engine refuses otherwise, and the bot used to
+                // plan straight through push-block mazes and get stuck in them.)
+                if (IsDraggableAt(zone, nx, ny) && !IsFreeFloor(zone, nx + dx, ny + dy))
+                    continue;
+
                 int tentativeGScore = gScore[currentPos] + 1;
 
                 if (!gScore.ContainsKey(neighborPos) || tentativeGScore < gScore[neighborPos])
@@ -193,6 +210,20 @@ public class Pathfinder
         // The game engine only checks middle layer for collision
 
         return true;
+    }
+
+    private bool IsDraggableAt(Zone zone, int x, int y)
+    {
+        var id = zone.GetTile(x, y, 1);
+        return id != 0xFFFF && id < _gameData.Tiles.Count && _gameData.Tiles[id].IsDraggable;
+    }
+
+    /// <summary>Somewhere a pushed block can land: inside the zone with nothing solid on it.</summary>
+    private bool IsFreeFloor(Zone zone, int x, int y)
+    {
+        if (x < 0 || x >= zone.Width || y < 0 || y >= zone.Height) return false;
+        var id = zone.GetTile(x, y, 1);
+        return id == 0xFFFF || id < _gameData.Tiles.Count && !_gameData.Tiles[id].IsObject;
     }
 
     /// <summary>

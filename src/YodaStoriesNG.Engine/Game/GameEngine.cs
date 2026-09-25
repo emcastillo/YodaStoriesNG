@@ -35,6 +35,8 @@ public unsafe partial class GameEngine : IDisposable
     private UI.HighScoreWindow? _highScoreWindow;
     private TitleScreen? _titleScreen;
     private UI.IMenuBar? _menuBar;
+    private UI.ControllerOverlay? _controllerOverlay;
+    private SectorPuzzles? _sectorPuzzles;  // worlds from OriginalWorldGenerator only
 
     private bool _isRunning;
     private readonly string _dataPath;
@@ -69,10 +71,9 @@ public unsafe partial class GameEngine : IDisposable
     private const int TILE_UPGRADED_LIGHTSABER = 510;  // After 5 missions
     private const int TILE_THE_FORCE = 511;            // After 10 missions (ranged)
 
-    // Indiana Jones weapon tile constants (TODO: Verify correct tile IDs from DESKTOP.DAW)
-    private const int TILE_BASIC_WHIP = 18;            // Starting weapon (whip)
-    private const int TILE_UPGRADED_WHIP = 19;         // After 5 missions (placeholder)
-    private const int TILE_PISTOL = 20;                // After 10 missions (ranged, placeholder)
+    // Indiana Jones weapon tiles: each weapon character's inventory tile (CHAR frame 1).
+    // The pistol is not a reward for games won - world generation hides it in a Find zone.
+    private const int TILE_WHIP = 449;
 
     /// <summary>
     /// Gets the appropriate weapon for the player's mission count.
@@ -81,9 +82,7 @@ public unsafe partial class GameEngine : IDisposable
     {
         if (_gameData?.GameType == GameType.IndianaJones)
         {
-            if (missionsCompleted >= 10) return TILE_PISTOL;
-            if (missionsCompleted >= 5) return TILE_UPGRADED_WHIP;
-            return TILE_BASIC_WHIP;
+            return TILE_WHIP;
         }
         else
         {
@@ -250,15 +249,7 @@ public unsafe partial class GameEngine : IDisposable
         _actionExecutor.OnMessage += (text) => _messages.ShowMessage(text, MessageType.Info);
         _actionExecutor.OnPlaySound += (soundId) => _sounds?.PlaySound(soundId);
 
-        // Initialize sound manager
-        _sounds = new SoundManager(_dataPath);
-        _sounds.Initialize();
-
-        // Load common sounds
-        foreach (var sound in _gameData.Sounds)
-        {
-            _sounds.LoadSound(sound.Id, sound.FileName);
-        }
+        LoadSounds(_dataPath);
 
         // Initialize game controller support
         InitializeController();
@@ -301,6 +292,9 @@ public unsafe partial class GameEngine : IDisposable
         _menuBar.OnSelectDataFile += SelectDataFile;
         _menuBar.OnShowAbout += ShowAboutDialog;
         _menuBar.OnShowHighScores += ShowHighScores;
+        _menuBar.OnHideMenuBar += () => SetMenuBarVisible(false);
+        if (KeyBindings.Load().HideMenuBar)
+            SetMenuBarVisible(false);
 
         // Initialize controls window, about window, and score window
         _controlsWindow = new ControlsWindow();
@@ -308,10 +302,48 @@ public unsafe partial class GameEngine : IDisposable
         _scoreWindow = new ScoreWindow();
         _highScoreWindow = new UI.HighScoreWindow();
 
+        _controllerOverlay = new UI.ControllerOverlay(_renderer.GetFont(), new UI.ControllerOverlay.Item[]
+        {
+            new(() => "Resume", () => { }),
+            new(() => "Save Game", SaveGame),
+            new(() => "Load Game", LoadGame),
+            new(() => $"New Game ({_selectedWorldSize})", StartNewGame),
+            new(() => $"World Size: {_selectedWorldSize}",
+                () => _selectedWorldSize = _selectedWorldSize == WorldSize.XtraLarge ? WorldSize.Small : _selectedWorldSize + 1,
+                KeepOpen: true),
+            new(() => $"Graphics Scale: {_graphicsScale}x",
+                () => SetGraphicsScale(_graphicsScale switch { 1 => 2, 2 => 4, _ => 1 }), KeepOpen: true),
+            new(() => $"Sound: {(_sounds?.IsMuted == false ? "On" : "Off")}", () => _sounds?.ToggleMute(), KeepOpen: true),
+            new(() => $"Mission Bot: {(IsBotRunning ? "On" : "Off")}",
+                () => { if (IsBotRunning) DisableBot(); else EnableBot(); }, KeepOpen: true),
+            new(() => $"Menu Bar: {(_menuBar?.Visible == false ? "Hidden" : "Shown")}",
+                () => SetMenuBarVisible(_menuBar?.Visible == false), KeepOpen: true),
+            new(() => "Controller Controls", ShowControllerControls),
+            new(() => "High Scores", ShowHighScores),
+            new(() => "Quit", () => _isRunning = false),
+        });
+        _controllerOverlay.OnOpenChanged += open => _state.IsPaused = open;
+
         // Show title screen
         _showingTitleScreen = true;
 
         return true;
+    }
+
+    /// <summary>Shows or hides the menu bar on every platform, and remembers the choice.</summary>
+    private void SetMenuBarVisible(bool visible)
+    {
+        if (_menuBar == null || _menuBar.Visible == visible) return;
+        _menuBar.Close();
+        _menuBar.Visible = visible;
+        _renderer?.SetMenuBarStrip(visible);
+
+        var settings = KeyBindings.Load();
+        settings.HideMenuBar = !visible;
+        settings.Save();
+
+        if (!visible)
+            _messages.ShowMessage("Menu bar hidden - F10 or the pause menu brings it back", MessageType.System);
     }
 
     private void ShowAboutDialog()
@@ -359,6 +391,19 @@ public unsafe partial class GameEngine : IDisposable
         }
     }
 
+    /// <summary>Each game has its own SNDS table and files, so a new data file means new sounds.</summary>
+    private void LoadSounds(string dataPath)
+    {
+        bool muted = _sounds?.IsMuted ?? false;
+        _sounds?.Dispose();
+
+        _sounds = new SoundManager(dataPath) { IsMuted = muted };
+        _sounds.Initialize();
+
+        int loaded = _gameData!.Sounds.Count(sound => _sounds.LoadSound(sound.Id, sound.FileName));
+        Console.WriteLine($"Loaded {loaded} of {_gameData.Sounds.Count} sounds");
+    }
+
     private void ReloadGameData(string dataFilePath)
     {
         _messages.ShowMessage($"Loading: {Path.GetFileName(dataFilePath)}...", MessageType.System);
@@ -384,8 +429,10 @@ public unsafe partial class GameEngine : IDisposable
             // Update game data
             _gameData = newGameData;
 
-            // Recreate tile atlas
+            // Each game has its own palette; switch before the atlas is rebuilt from it
+            Palette.SetGameType(_gameData.GameType);
             _renderer?.RecreateTileAtlas(_gameData);
+            LoadSounds(Path.GetDirectoryName(dataFilePath) ?? _dataPath);
 
             // Reset state
             _state.Reset();
@@ -642,6 +689,14 @@ public unsafe partial class GameEngine : IDisposable
         var world = _worldGenerator.GenerateWorld(_selectedWorldSize);
         Console.WriteLine($"Generated {_selectedWorldSize} world ({world.GridWidth}x{world.GridHeight} grid)");
 
+        _sectorPuzzles = null;
+        if (world.Sectors.Count > 0)
+        {
+            _sectorPuzzles = new SectorPuzzles(_gameData!, _state, world);
+            _sectorPuzzles.OnSpeak += (speaker, text) => _messages.ShowDialogue(speaker, text);
+            _sectorPuzzles.OnSound += id => _sounds?.PlaySound(id);
+        }
+
         // Wire up world data to action executor for puzzle conditions
         if (_actionExecutor != null)
         {
@@ -650,7 +705,9 @@ public unsafe partial class GameEngine : IDisposable
         }
 
         // Welcome message - minimal startup hints (mission given by Yoda)
-        _messages.ShowMessage("Find Yoda to receive your mission.", MessageType.System);
+        // Indiana Jones has no Yoda: the mission is handed over at the start.
+        _messages.ShowMessage(_gameData!.GameType == GameType.IndianaJones
+            ? world.Mission?.Description ?? "" : "Find Yoda to receive your mission.", MessageType.System);
 
         // Load the starting zone (from Dagobah or landing zone)
         var startZoneId = world.StartingZoneId;
@@ -799,6 +856,13 @@ public unsafe partial class GameEngine : IDisposable
                 TryMovePlayer(dx, dy, dir, false);
                 break;
 
+            case BotActionType.Pull:
+            {
+                var (pdx, pdy) = dir switch { Direction.Up => (0, -1), Direction.Down => (0, 1), Direction.Left => (-1, 0), _ => (1, 0) };
+                TryMovePlayer(pdx, pdy, dir, tryPull: true);
+                break;
+            }
+
             case BotActionType.Attack:
                 _state.PlayerDirection = dir;
                 PerformAttack();
@@ -903,8 +967,6 @@ public unsafe partial class GameEngine : IDisposable
             }
         }
 
-        // Play zone entry sound (but don't spam messages)
-        _sounds?.PlaySound(SoundManager.SoundDoor);
 
         // Debug: Show action count for zones with scripts
         if (zone.Actions.Any(a => a.Instructions.Count > 0))
@@ -912,6 +974,8 @@ public unsafe partial class GameEngine : IDisposable
             int totalInstructions = zone.Actions.Sum(a => a.Instructions.Count);
             Console.WriteLine($"  Zone has {zone.Actions.Count} scripts ({totalInstructions} instructions)");
         }
+
+        _sectorPuzzles?.LayDown(zone);
 
         // Initialize NPCs from zone objects
         InitializeZoneNPCs();
@@ -958,10 +1022,13 @@ public unsafe partial class GameEngine : IDisposable
 
             // Update game state
             Update(deltaTime);
+            _sounds?.Update();
 
             // Docs capture harness - drives the shot list, then stops the loop
             if (Dev.Capture.Enabled)
                 CaptureTick(deltaTime);
+            else if (BotRunSeconds > 0)
+                BotRunTick(deltaTime);
 
             // Render
             Render();
@@ -1001,6 +1068,13 @@ public unsafe partial class GameEngine : IDisposable
                 }
             }
 
+            if ((SDLEventType)evt.Type == SDLEventType.Keydown && evt.Key.Keysym.Sym == (int)SDLKeyCode.F10 &&
+                _menuBar is { Visible: false })
+            {
+                SetMenuBarVisible(true);
+                continue;
+            }
+
             // The menu bar goes first, and on the title screen too - New Game lives in it.
             // It owns the reserved strip and so wants raw window coordinates; everything
             // after it thinks in game-area coordinates, hence the shift.
@@ -1008,6 +1082,13 @@ public unsafe partial class GameEngine : IDisposable
             {
                 SDLEvent evtCopy = evt;
                 if (_menuBar.HandleEvent(&evtCopy))
+                    continue;
+            }
+
+            if (_controllerOverlay != null && !_showingTitleScreen)
+            {
+                SDLEvent evtCopy = evt;
+                if (_controllerOverlay.HandleEvent(&evtCopy))
                     continue;
             }
 
@@ -1100,7 +1181,9 @@ public unsafe partial class GameEngine : IDisposable
                     break;
 
                 case SDLEventType.Controllerdeviceremoved:
-                    if (_controllerConnected)
+                    // Which is an instance id; only let go if it is the pad we are using.
+                    if (_controllerConnected &&
+                        SDL.JoystickInstanceID(SDL.GameControllerGetJoystick(_controller)) == evt.Cdevice.Which)
                     {
                         SDL.GameControllerClose(_controller);
                         _controller = null;
@@ -1147,7 +1230,7 @@ public unsafe partial class GameEngine : IDisposable
         }
 
         // Handle analog stick movement (called every frame)
-        if (_controllerConnected && _controller != null)
+        if (_controllerConnected && _controller != null && _controllerOverlay?.IsOpen != true)
         {
             HandleControllerAnalog();
         }
@@ -1161,7 +1244,7 @@ public unsafe partial class GameEngine : IDisposable
     /// - X: Use Item
     /// - Y: Show Objective
     /// - LB/RB: Cycle weapons
-    /// - Start: Restart
+    /// - Start/Back: the pause overlay, which UI.ControllerOverlay handles before this
     /// - D-Pad: Movement
     /// </summary>
     private void HandleControllerButton(byte button, bool pressed)
@@ -1173,8 +1256,6 @@ public unsafe partial class GameEngine : IDisposable
         const byte SDL_CONTROLLER_BUTTON_B = 1;
         const byte SDL_CONTROLLER_BUTTON_X = 2;
         const byte SDL_CONTROLLER_BUTTON_Y = 3;
-        const byte SDL_CONTROLLER_BUTTON_BACK = 4;
-        const byte SDL_CONTROLLER_BUTTON_START = 6;
         const byte SDL_CONTROLLER_BUTTON_LEFTSHOULDER = 9;
         const byte SDL_CONTROLLER_BUTTON_RIGHTSHOULDER = 10;
         const byte SDL_CONTROLLER_BUTTON_DPAD_UP = 11;
@@ -1196,12 +1277,6 @@ public unsafe partial class GameEngine : IDisposable
                 break;
             case SDL_CONTROLLER_BUTTON_Y:
                 ShowMissionObjective();  // Y = Objective
-                break;
-            case SDL_CONTROLLER_BUTTON_START:
-                StartNewGame();  // Start = Restart
-                break;
-            case SDL_CONTROLLER_BUTTON_BACK:
-                _isRunning = false;  // Back = Quit
                 break;
             case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
             case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
@@ -1343,7 +1418,7 @@ public unsafe partial class GameEngine : IDisposable
                     // Equip the new weapon
                     _state.SelectedWeapon = _draggedItemId.Value;
                     _messages.ShowMessage("Equipped weapon", MessageType.Info);
-                    _sounds?.PlaySound(SoundManager.SoundPickup);
+                    PlayEquipSound(_draggedItemId.Value);
                 }
             }
             // Check if dropped on inventory
@@ -1361,7 +1436,6 @@ public unsafe partial class GameEngine : IDisposable
                         _state.Inventory.Add(_draggedItemId.Value);
                         _state.SelectedWeapon = null;
                         _messages.ShowMessage("Unequipped weapon", MessageType.Info);
-                        _sounds?.PlaySound(SoundManager.SoundPickup);
                     }
                     // Dragging between inventory slots - swap
                     else if (_draggedFromSlot.HasValue && _draggedFromSlot.Value >= 0 && targetSlot.HasValue)
@@ -1674,6 +1748,7 @@ public unsafe partial class GameEngine : IDisposable
         else
         {
             _state.SelectedWeapon = weaponId;
+            PlayEquipSound(weaponId);
             var weaponName = GetTileName(weaponId) ?? $"Weapon";
             _messages.ShowMessage($"Equipped: {weaponName}", MessageType.Info);
         }
@@ -1806,6 +1881,7 @@ public unsafe partial class GameEngine : IDisposable
         _state.CurrentZone.SetTile(oldPlayerX, oldPlayerY, 1, behindTile);
         _state.CurrentZone.SetTile(behindX, behindY, 1, 0xFFFF);
         _messages.ShowMessage("*pull*", MessageType.Info);
+        _sectorPuzzles?.Refresh(_state.CurrentZone); // whatever the block was covering shows now
     }
 
     private void TryMovePlayer(int dx, int dy, Direction direction, bool tryPull = false)
@@ -1821,6 +1897,13 @@ public unsafe partial class GameEngine : IDisposable
         {
             // Try to transition to adjacent zone
             HandleZoneTransition(dx, dy);
+            return;
+        }
+
+        // The sector's trading NPC is a tile that talks when bumped
+        if (_sectorPuzzles?.Bump(newX, newY) == true)
+        {
+            SyncSectorMission();
             return;
         }
 
@@ -1847,26 +1930,28 @@ public unsafe partial class GameEngine : IDisposable
                         _state.CurrentZone.SetTile(pushX, pushY, 1, middleTile);
                         _state.CurrentZone.SetTile(newX, newY, 1, 0xFFFF);
                         _messages.ShowMessage("*push*", MessageType.Info);
+                        // A crate is often sitting on a hidden item; uncovering it shows it
+                        _sectorPuzzles?.Refresh(_state.CurrentZone);
                         // Continue to move player into the now-empty space
                     }
                     else
                     {
                         // Can't push - something blocking
-                        _actionExecutor?.ExecuteZoneActions(ActionTrigger.Bump);
+                        BumpInto(newX, newY);
                         return;
                     }
                 }
                 else
                 {
                     // Can't push off edge
-                    _actionExecutor?.ExecuteZoneActions(ActionTrigger.Bump);
+                    BumpInto(newX, newY);
                     return;
                 }
             }
             else if (tile.IsObject)
             {
                 // Collision - trigger bump action
-                _actionExecutor?.ExecuteZoneActions(ActionTrigger.Bump);
+                BumpInto(newX, newY);
                 return;
             }
         }
@@ -1939,8 +2024,9 @@ public unsafe partial class GameEngine : IDisposable
 
                     var itemName = GetTileName(objTile) ?? $"Item";
                     _messages.ShowPickup(itemName);
-                    _sounds?.PlaySound(SoundManager.SoundPickup);
                     Console.WriteLine($"Auto-picked up tile item {objTile} ({itemName}) at ({newX},{newY})");
+                    _sectorPuzzles?.OnPickedUp(objTile);
+                    SyncSectorMission();
                 }
             }
 
@@ -1961,7 +2047,6 @@ public unsafe partial class GameEngine : IDisposable
                     _messages.ShowDialogue("R2-D2", "*happy beeps* I'm ready to help with your mission!");
                     _messages.ShowPickup("R2-D2 (Locator)");
                     _messages.ShowMessage("Use R2-D2 from your inventory for hints!", MessageType.Info);
-                    _sounds?.PlaySound(SoundManager.SoundPickup);
                     Console.WriteLine($"Collected R2D2 tile at ({newX},{newY})");
                 }
             }
@@ -2264,22 +2349,13 @@ public unsafe partial class GameEngine : IDisposable
                     return;
                 }
 
-                // Also verify spawn position is walkable
+                // One tile in is blocked: land on the edge tile itself, which was just checked.
+                // The old fallback searched for the "nearest walkable" square, which could be a
+                // pocket walled off from the edge you came through - trapping the player.
                 if (!IsPositionWalkable(destZone, spawnX, spawnY))
                 {
-                    // Try to find a nearby walkable position
-                    var walkable = FindNearestWalkablePosition(spawnX, spawnY, destZone);
-                    if (walkable.HasValue)
-                    {
-                        spawnX = walkable.Value.x;
-                        spawnY = walkable.Value.y;
-                    }
-                    else
-                    {
-                        Console.WriteLine($"Edge transition blocked: no walkable spawn in dest zone {connectedZoneId}");
-                        _messages.ShowMessage("Can't go that way", MessageType.Info);
-                        return;
-                    }
+                    spawnX = edgeCheckX;
+                    spawnY = edgeCheckY;
                 }
 
                 Console.WriteLine($"Edge transition {direction}: zone {_state.CurrentZoneId} -> {connectedZoneId} at ({spawnX},{spawnY})");
@@ -2310,7 +2386,6 @@ public unsafe partial class GameEngine : IDisposable
                         _state.MarkObjectCollected(_state.CurrentZoneId, obj.X, obj.Y);
                         var itemName = GetTileName(obj.Argument) ?? $"Item #{obj.Argument}";
                         _messages.ShowPickup(itemName);
-                        _sounds?.PlaySound(SoundManager.SoundPickup);
 
                         // Check if picking up this item advances the mission
                         TryAdvanceMissionOnPickup(obj.Argument);
@@ -2330,6 +2405,7 @@ public unsafe partial class GameEngine : IDisposable
                         // Auto-equip the new weapon
                         _state.CurrentWeaponIndex = _state.Weapons.IndexOf(obj.Argument);
                         _state.SelectedWeapon = obj.Argument;
+                        PlayEquipSound(obj.Argument);
                         _state.MarkObjectCollected(_state.CurrentZoneId, obj.X, obj.Y);
                         var weaponName = GetTileName(obj.Argument) ?? $"Weapon";
                         var ammoState = _state.GetWeaponAmmo(obj.Argument);
@@ -2338,7 +2414,6 @@ public unsafe partial class GameEngine : IDisposable
                         else
                             _messages.ShowPickup(weaponName);
                         _messages.ShowMessage("Press Tab to switch weapons", MessageType.Info);
-                        _sounds?.PlaySound(SoundManager.SoundPickup);
                     }
                     break;
 
@@ -2356,7 +2431,6 @@ public unsafe partial class GameEngine : IDisposable
                         var itemName = GetTileName(obj.Argument) ?? "Locator Droid";
                         _messages.ShowPickup(itemName);
                         _messages.ShowMessage("Use the locator from your inventory for hints!", MessageType.Info);
-                        _sounds?.PlaySound(SoundManager.SoundPickup);
                     }
                     break;
 
@@ -2447,6 +2521,13 @@ public unsafe partial class GameEngine : IDisposable
             if (_actionExecutor != null)
             {
                 _actionExecutor.PlacedItemId = usedItemId;
+                (_actionExecutor.PlacedX, _actionExecutor.PlacedY) = _state.PlayerDirection switch
+                {
+                    Direction.Up => (_state.PlayerX, _state.PlayerY - 1),
+                    Direction.Down => (_state.PlayerX, _state.PlayerY + 1),
+                    Direction.Left => (_state.PlayerX - 1, _state.PlayerY),
+                    _ => (_state.PlayerX + 1, _state.PlayerY),
+                };
 
                 // Also set NPC context if there's a nearby friendly NPC
                 var nearbyNpc = FindNearbyNPC(friendlyOnly: true);
@@ -2456,11 +2537,22 @@ public unsafe partial class GameEngine : IDisposable
                     Console.WriteLine($"UseItem: Set InteractingNpcId to {nearbyNpc.CharacterId} for nearby NPC");
 
                     // Check if this advances the mission
-                    TryAdvanceMission(usedItemId, nearbyNpc);
+                    if (_sectorPuzzles == null)
+                        TryAdvanceMission(usedItemId, nearbyNpc);
                 }
             }
 
             _actionExecutor?.ExecuteZoneActions(ActionTrigger.UseItem);
+
+            // No script took the item: the sector's own puzzle gets a go (WebFun's PlaceTile
+            // hotspot mode). A script that used the item has already removed it.
+            if (_sectorPuzzles != null && _actionExecutor != null && _state.HasItem(usedItemId))
+                _sectorPuzzles.PlaceItem(usedItemId, _actionExecutor.PlacedX, _actionExecutor.PlacedY);
+            if (_sectorPuzzles != null && _state.CurrentZone != null)
+            {
+                _sectorPuzzles.Refresh(_state.CurrentZone);
+                SyncSectorMission();
+            }
 
             // Clear the context after execution
             if (_actionExecutor != null)
@@ -2471,6 +2563,24 @@ public unsafe partial class GameEngine : IDisposable
         }
         else
         {
+            // Facing the sector's NPC or Marcus's desk: the action button bumps it
+            var (facingX, facingY) = _state.PlayerDirection switch
+            {
+                Direction.Up => (_state.PlayerX, _state.PlayerY - 1),
+                Direction.Down => (_state.PlayerX, _state.PlayerY + 1),
+                Direction.Left => (_state.PlayerX - 1, _state.PlayerY),
+                _ => (_state.PlayerX + 1, _state.PlayerY),
+            };
+            if (_sectorPuzzles?.Bump(facingX, facingY) == true)
+            {
+                SyncSectorMission();
+                return;
+            }
+
+            // Pressing action at a tile is bumping it, as far as the zone's scripts are concerned
+            if (_state.CurrentZone != null && _state.CurrentZone.GetTile(facingX, facingY, 1) != 0xFFFF)
+                BumpInto(facingX, facingY);
+
             // Check for friendly NPC interaction first
             if (!TryInteractWithNPC())
             {
@@ -2506,8 +2616,8 @@ public unsafe partial class GameEngine : IDisposable
                 Console.WriteLine($"Mission: All steps done, marking complete");
                 mission.IsCompleted = true;
                 _messages.ShowMessage("MISSION COMPLETE!", MessageType.System);
-                _messages.ShowMessage("Return to Yoda on Dagobah.", MessageType.Info);
-                _sounds?.PlaySound(SoundManager.SoundPickup);
+                _messages.ShowMessage(MissionCompleteHint, MessageType.Info);
+                PlayYodaSound(YodaFlourish);
             }
             return;
         }
@@ -2540,7 +2650,6 @@ public unsafe partial class GameEngine : IDisposable
                 _state.AddItem(currentStep.RewardItemId);
                 var rewardName = GetTileName(currentStep.RewardItemId) ?? "item";
                 _messages.ShowMessage($"Traded {usedItemName} for {rewardName}!", MessageType.Pickup);
-                _sounds?.PlaySound(SoundManager.SoundPickup);
 
                 // Auto-select the new item
                 _state.SelectedItem = currentStep.RewardItemId;
@@ -2556,8 +2665,8 @@ public unsafe partial class GameEngine : IDisposable
             if (missionComplete)
             {
                 _messages.ShowMessage("MISSION COMPLETE!", MessageType.System);
-                _messages.ShowMessage("Return to Yoda on Dagobah.", MessageType.Info);
-                _sounds?.PlaySound(SoundManager.SoundPickup);
+                _messages.ShowMessage(MissionCompleteHint, MessageType.Info);
+                PlayYodaSound(YodaFlourish);
             }
             else
             {
@@ -2600,8 +2709,8 @@ public unsafe partial class GameEngine : IDisposable
             if (missionComplete)
             {
                 _messages.ShowMessage("MISSION COMPLETE!", MessageType.System);
-                _messages.ShowMessage("Return to Yoda on Dagobah.", MessageType.Info);
-                _sounds?.PlaySound(SoundManager.SoundPickup);
+                _messages.ShowMessage(MissionCompleteHint, MessageType.Info);
+                PlayYodaSound(YodaFlourish);
             }
             else
             {
@@ -2690,7 +2799,6 @@ public unsafe partial class GameEngine : IDisposable
                         _state.MarkObjectCollected(_state.CurrentZoneId, obj.X, obj.Y);
                         var itemName = GetTileName(obj.Argument) ?? $"Item";
                         _messages.ShowPickup(itemName);
-                        _sounds?.PlaySound(SoundManager.SoundPickup);
                         return true;
                     }
                     break;
@@ -2705,6 +2813,7 @@ public unsafe partial class GameEngine : IDisposable
                         }
                         _state.CurrentWeaponIndex = _state.Weapons.IndexOf(obj.Argument);
                         _state.SelectedWeapon = obj.Argument;
+                        PlayEquipSound(obj.Argument);
                         _state.MarkObjectCollected(_state.CurrentZoneId, obj.X, obj.Y);
                         var weaponName = GetTileName(obj.Argument) ?? $"Weapon";
                         var ammoState = _state.GetWeaponAmmo(obj.Argument);
@@ -2713,7 +2822,6 @@ public unsafe partial class GameEngine : IDisposable
                         else
                             _messages.ShowPickup(weaponName);
                         _messages.ShowMessage("Press Tab to switch weapons", MessageType.Info);
-                        _sounds?.PlaySound(SoundManager.SoundPickup);
                         return true;
                     }
                     break;
@@ -2731,7 +2839,6 @@ public unsafe partial class GameEngine : IDisposable
                         var locatorName = GetTileName(obj.Argument) ?? "Locator Droid";
                         _messages.ShowPickup(locatorName);
                         _messages.ShowMessage("Use the locator from your inventory for hints!", MessageType.Info);
-                        _sounds?.PlaySound(SoundManager.SoundPickup);
                         return true;
                     }
                     break;
@@ -2834,7 +2941,7 @@ public unsafe partial class GameEngine : IDisposable
                         {
                             // Mission complete! Increment counter
                             _state.GamesWon++;
-                            _sounds?.PlaySound(SoundManager.SoundPickup);
+                            PlayYodaSound(YodaYouWin);
 
                             // Check for 15-mission cycle milestones
                             if (_state.GamesWon >= 15)
@@ -2891,7 +2998,6 @@ public unsafe partial class GameEngine : IDisposable
                                 : $"Take this {itemName}. Your journey begins. Find your X-Wing nearby.";
                             _messages.ShowDialogue("Yoda", briefing);
                             _messages.ShowMessage($"Received: {itemName}", MessageType.Pickup);
-                            _sounds?.PlaySound(SoundManager.SoundPickup);
 
                             // Show first objective hint
                             if (mission?.CurrentPuzzleStep != null && !string.IsNullOrEmpty(mission.CurrentPuzzleStep.Hint))
@@ -2919,7 +3025,6 @@ public unsafe partial class GameEngine : IDisposable
                             npc.IsReadyToCollect = true;
                             _messages.ShowDialogue("R2-D2", "*beep boop whistle* I will join you on your mission!");
                             _messages.ShowMessage("Walk over R2-D2 to add it to your inventory.", MessageType.Info);
-                            _sounds?.PlaySound(SoundManager.SoundPickup);
                             Console.WriteLine($"R2D2 at ({npc.X},{npc.Y}) is now ready to collect");
                         }
                         else
@@ -2940,7 +3045,6 @@ public unsafe partial class GameEngine : IDisposable
 
                         _messages.ShowDialogue(npcName, $"Here, take this {itemName}. You may need it.");
                         _messages.ShowMessage($"Received: {itemName}", MessageType.Pickup);
-                        _sounds?.PlaySound(SoundManager.SoundPickup);
 
                         Console.WriteLine($"NPC {npcName} gave item {itemId} ({itemName}) to player");
                     }
@@ -2961,7 +3065,6 @@ public unsafe partial class GameEngine : IDisposable
                         _messages.ShowDialogue(npcName, dialogue);
                     }
                 }
-                _sounds?.PlaySound(SoundManager.SoundTalk);
                 return true;
             }
         }
@@ -3081,7 +3184,8 @@ public unsafe partial class GameEngine : IDisposable
         };
         _state.Projectiles.Add(projectile);
 
-        _sounds?.PlaySound(SoundManager.SoundAttack);
+        if (_state.SelectedWeapon.HasValue)
+            PlayWeaponSound(WeaponCharacterFor(_state.SelectedWeapon.Value));
 
         // Handle single-use weapons (grenades, thermal detonators)
         if (ammoState is { IsSingleUse: true, CurrentAmmo: 0 })
@@ -3112,10 +3216,14 @@ public unsafe partial class GameEngine : IDisposable
 
         _state.CurrentWeaponIndex = (_state.CurrentWeaponIndex + 1) % _state.Weapons.Count;
         _state.SelectedWeapon = _state.Weapons[_state.CurrentWeaponIndex];
+        PlayEquipSound(_state.SelectedWeapon.Value);
     }
 
     private void PerformMeleeAttack()
     {
+        if (_state.SelectedWeapon.HasValue)
+            PlayWeaponSound(WeaponCharacterFor(_state.SelectedWeapon.Value));
+
         // Trigger attack animation
         _state.IsAttacking = true;
         _state.AttackTimer = 0.3;
@@ -3177,7 +3285,6 @@ public unsafe partial class GameEngine : IDisposable
             hitAny = true;
             bool killed = npc.TakeDamage(damage);
             _state.AttackFlashTimer = 0.5;
-            _sounds?.PlaySound(SoundManager.SoundAttack);
 
             if (killed)
             {
@@ -3249,7 +3356,10 @@ public unsafe partial class GameEngine : IDisposable
         // 1. Spawn NPCs from zone objects (PuzzleNPC)
         foreach (var obj in _state.CurrentZone.Objects)
         {
-            if (obj.Type == ZoneObjectType.PuzzleNPC)
+            // An NPC hotspot's argument is a tile to draw, not a character. Sector worlds lay
+            // it down as one (SectorPuzzles); spawning it as a character is how a tile number
+            // turned into Indiana Jones' "Rock".
+            if (obj.Type == ZoneObjectType.PuzzleNPC && _sectorPuzzles == null)
             {
                 var npc = NPC.FromZoneObject(obj);
                 ConfigureNPCFromCharacter(npc);
@@ -3257,10 +3367,9 @@ public unsafe partial class GameEngine : IDisposable
             }
         }
 
-        // 2. Spawn NPCs from IZAX entity data
-        if (_state.CurrentZone.AuxData?.Entities != null)
+        // 2. Spawn the zone's IZAX monsters
         {
-            foreach (var entity in _state.CurrentZone.AuxData.Entities)
+            foreach (var entity in _state.CurrentZone.Monsters)
             {
                 // Skip invalid entries
                 if (entity.CharacterId == 0xFFFF)
@@ -3276,8 +3385,8 @@ public unsafe partial class GameEngine : IDisposable
                     Direction = Direction.Down,
                     IsEnabled = true,
                     // Store the item this NPC will give when interacted with
-                    CarriedItemId = entity.ItemTileId > 0 && entity.ItemTileId != 0xFFFF ? entity.ItemTileId : null,
-                    CarriedItemQuantity = entity.ItemQuantity
+                    // Loot is stored as tile + 1, so 0 and -1 both mean "nothing of its own"
+                    CarriedItemId = entity.Loot > 0 ? entity.Loot - 1 : null,
                 };
 
                 ConfigureNPCFromCharacter(npc);
@@ -3346,7 +3455,7 @@ public unsafe partial class GameEngine : IDisposable
             }
 
             // Apply character aux data for damage
-            if (character.AuxData != null)
+            if (character.AuxData != null && character.AuxData.Damage >= 0)
             {
                 npc.Damage = character.AuxData.Damage;
             }
@@ -3358,11 +3467,13 @@ public unsafe partial class GameEngine : IDisposable
                 npc.Health = character.Weapon.Health;
             }
 
-            // Apply ranged attack from CHWP weapon reference
-            if (character.Weapon != null && character.Weapon.Reference > 0 && character.Weapon.Reference != 0xFFFF)
+            // An enemy's CHWP reference is the weapon character it fires (a Stormtrooper's
+            // Imperial Blaster, a Nazi's pistol); no weapon means melee only.
+            if (character.Weapon != null && character.Weapon.Reference >= 0 &&
+                character.Weapon.Reference < _gameData!.Characters.Count)
             {
                 npc.HasRangedAttack = true;
-                npc.WeaponTileId = character.Weapon.Reference;
+                npc.WeaponCharacterId = character.Weapon.Reference;
             }
 
             // Enemy NPCs drop loot from their carried item
@@ -3662,7 +3773,7 @@ public unsafe partial class GameEngine : IDisposable
             {
                 var destZone = _gameData.Zones[landingZoneId];
                 _messages.ShowMessage($"Traveling to {world.Planet}...", MessageType.System);
-                _sounds?.PlaySound(SoundManager.SoundDoor);
+                PlayYodaSound(YodaXWingOut);
 
                 // Find X-Wing landing spot - Luke must spawn AT the X-Wing
                 int spawnX = destZone.Width / 2;
@@ -3703,7 +3814,7 @@ public unsafe partial class GameEngine : IDisposable
             {
                 var destZone = _gameData.Zones[dagobahZoneId];
                 _messages.ShowMessage("Returning to Dagobah...", MessageType.System);
-                _sounds?.PlaySound(SoundManager.SoundDoor);
+                PlayYodaSound(YodaXWingOut);
 
                 // Find spawn point near X-Wing
                 int spawnX = destZone.Width / 2;
@@ -3871,7 +3982,7 @@ public unsafe partial class GameEngine : IDisposable
                         npc.ActionTimer = 0;
                         _state.Health -= npc.Damage;
                         _state.DamageFlashTimer = 1.0;  // Trigger damage flash
-                        _sounds?.PlaySound(SoundManager.SoundHurt);
+                        _sounds?.PlaySound(SoundManager.Hurt);
 
                         var attackerName = GetCharacterName(npc.CharacterId) ?? "Enemy";
                         _messages.ShowCombat($"{attackerName} hits you! (-{npc.Damage} HP)");
@@ -3895,6 +4006,11 @@ public unsafe partial class GameEngine : IDisposable
         bool sameCol = dx == 0 && Math.Abs(dy) > 0 && Math.Abs(dy) <= 4;
 
         if (!sameRow && !sameCol)
+            return;
+
+        // The original rolls this once per monster tick, not once per rendered frame: at 60fps
+        // every armed enemy in line emptied a magazine a second. Share melee's cooldown.
+        if (npc.ActionTimer < npc.AttackCooldown)
             return;
 
         // ~85% chance to fire per eligible tick (rand() % 7 != 3 fires, so 6/7 ~ 85%)
@@ -3926,9 +4042,10 @@ public unsafe partial class GameEngine : IDisposable
             LifeTime = 0.5,  // Max 4 tiles at speed 8 = 0.5s
             Type = ProjectileType.Blaster,
             IsEnemyProjectile = true,
-            TileId = npc.WeaponTileId
         };
         _state.Projectiles.Add(projectile);
+        npc.ActionTimer = 0;
+        PlayWeaponSound(npc.WeaponCharacterId);
     }
 
     /// <summary>
@@ -4016,7 +4133,7 @@ public unsafe partial class GameEngine : IDisposable
                 {
                     _state.Health -= projectile.Damage;
                     _state.DamageFlashTimer = 1.0;
-                    _sounds?.PlaySound(SoundManager.SoundHurt);
+                    _sounds?.PlaySound(SoundManager.Hurt);
                     _messages.ShowCombat($"Shot! (-{projectile.Damage} HP)");
                     projectile.IsActive = false;
                 }
@@ -4077,7 +4194,6 @@ public unsafe partial class GameEngine : IDisposable
     {
         var npcName = GetCharacterName(npc.CharacterId) ?? "Target";
         _messages.ShowCombat($"{npcName} defeated!");
-        _sounds?.PlaySound(SoundManager.SoundDeath);
 
         // Drop loot if applicable
         if (npc.DropsLoot && _state.CurrentZone != null)
@@ -4331,7 +4447,7 @@ public unsafe partial class GameEngine : IDisposable
         // Render zone info
         _renderer.RenderZoneInfo(
             _state.CurrentZoneId,
-            _state.CurrentZone.Planet.ToString(),
+            _state.CurrentZone.Name ?? _state.CurrentZone.Planet.ToString(),
             _state.CurrentZone.Width,
             _state.CurrentZone.Height);
 
@@ -4357,6 +4473,8 @@ public unsafe partial class GameEngine : IDisposable
             var lines = _debugOverlay.GetTabContent(_debugOverlay.CurrentTab);
             _renderer.RenderDebugOverlay(tabs, _debugOverlay.CurrentTab, lines, _debugOverlay.ScrollOffset);
         }
+
+        _controllerOverlay?.Render(_renderer.GetRenderer());
 
         RenderMenuBar();
 
@@ -4683,7 +4801,6 @@ public unsafe partial class GameEngine : IDisposable
         _messages.ShowDialogue("R2-D2", "*happy beeps* I'm ready to help with your mission!");
         _messages.ShowPickup("R2-D2 (Locator)");
         _messages.ShowMessage("Use the locator from your inventory for hints!", MessageType.Info);
-        _sounds?.PlaySound(SoundManager.SoundPickup);
 
         Console.WriteLine($"Collected R2D2 at ({r2d2.X},{r2d2.Y}), HasLocator={_state.HasLocator}");
     }
@@ -4694,7 +4811,7 @@ public unsafe partial class GameEngine : IDisposable
     /// </summary>
     private void ShowLocatorHint()
     {
-        _sounds?.PlaySound(SoundManager.SoundTalk);
+        PlayYodaSound(YodaLocator);
 
         // First check what's in front of the player for context-sensitive hints
         var targetPos = GetFacingPosition();
@@ -4842,6 +4959,77 @@ public unsafe partial class GameEngine : IDisposable
     /// <summary>
     /// Gets the character index for a weapon tile.
     /// </summary>
+    /// <summary>Runs the zone's bump scripts for walking (or pressing action) into (x, y).</summary>
+    private void BumpInto(int x, int y)
+    {
+        if (_actionExecutor == null) return;
+        _actionExecutor.BumpX = x;
+        _actionExecutor.BumpY = y;
+        _actionExecutor.ExecuteZoneActions(ActionTrigger.Bump);
+        if (_sectorPuzzles != null && _state.CurrentZone != null)
+            _sectorPuzzles.Refresh(_state.CurrentZone);
+    }
+
+    /// <summary>Moves the mission's current step to the first unsolved sector; announces the end once.</summary>
+    private void SyncSectorMission()
+    {
+        if (_sectorPuzzles == null || _worldGenerator?.CurrentWorld?.Mission is not { IsCompleted: false } mission) return;
+        if (!_sectorPuzzles.SyncMission()) return;
+        mission.IsCompleted = true;
+        _messages.ShowMessage("MISSION COMPLETE!", MessageType.System);
+        _messages.ShowMessage(MissionCompleteHint, MessageType.Info);
+    }
+
+    private string MissionCompleteHint => _gameData?.GameType == GameType.IndianaJones
+        ? $"You found the {GetTileName(_worldGenerator?.CurrentWorld?.Mission?.GoalPuzzle?.Item1 ?? -1) ?? "artifact"}!"
+        : "Return to Yoda on Dagobah.";
+
+    // Yoda Stories SNDS indices (WebFun variant/yoda/sounds.ts). Indiana Jones has its own
+    // table, of which only Hurt and NoGo are known, so these play for Yoda only.
+    private const int YodaLocator = 34;
+    private const int YodaXWingOut = 39;
+    private const int YodaFlourish = 58;
+    private const int YodaYouWin = 63;
+
+    private void PlayYodaSound(int soundId)
+    {
+        if (_gameData?.GameType != GameType.IndianaJones)
+            _sounds?.PlaySound(soundId);
+    }
+
+    /// <summary>
+    /// The weapon character equipped from inventory tile <paramref name="weaponTile"/>, or -1.
+    /// A weapon character's first frame ends in that tile (WebFun: frames[0].extensionRight).
+    /// </summary>
+    private int WeaponCharacterFor(int weaponTile) =>
+        _gameData?.Characters.FindIndex(c =>
+            c.Weapon != null && c.Frames.ExtensionRight.Length > 0 && c.Frames.ExtensionRight[0] == weaponTile) ?? -1;
+
+    /// <summary>A weapon character's CHWP reference is the sound it makes when used.</summary>
+    private void PlayWeaponSound(int weaponCharacterId)
+    {
+        if (_gameData != null && weaponCharacterId >= 0 && weaponCharacterId < _gameData.Characters.Count)
+            _sounds?.PlaySound(_gameData.Characters[weaponCharacterId].Weapon?.Reference ?? -1);
+    }
+
+    /// <summary>WebFun's getEquipSound: Yoda picks by weapon, Indiana Jones always plays sound 0.</summary>
+    private void PlayEquipSound(int weaponTile)
+    {
+        if (_gameData?.GameType == GameType.IndianaJones)
+        {
+            _sounds?.PlaySound(0);
+            return;
+        }
+
+        _sounds?.PlaySound(weaponTile switch
+        {
+            512 or 513 => 32,                                         // Blaster, rifle: Armed
+            TILE_BASIC_LIGHTSABER or TILE_UPGRADED_LIGHTSABER => 31,  // SaberOut
+            TILE_THE_FORCE => 52,                                     // ArmForce
+            _ => -1,
+        });
+    }
+
     private int GetWeaponCharacterIndex(int weaponTileId)
     {
         // Map weapon tile IDs to character indices

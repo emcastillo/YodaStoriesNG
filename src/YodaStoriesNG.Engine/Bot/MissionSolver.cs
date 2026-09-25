@@ -8,7 +8,7 @@ namespace YodaStoriesNG.Engine.Bot;
 /// systematically explores zones and interacts with everything, letting
 /// the game's IACT scripts drive actual progression.
 /// </summary>
-public class MissionSolver
+public partial class MissionSolver
 {
     private readonly GameState _state;
     private readonly GameData _gameData;
@@ -71,9 +71,12 @@ public class MissionSolver
     /// <summary>
     /// Check if a zone exit is blocked. Blocked exits are retried after visiting several zones.
     /// </summary>
-    public bool IsExitBlocked(Direction dir)
+    public bool IsExitBlocked(Direction dir) => IsExitBlocked(_state.CurrentZoneId, dir);
+
+    /// <summary>The same, for any zone - so route planning avoids exits already found blocked elsewhere.</summary>
+    private bool IsExitBlocked(int zoneId, Direction dir)
     {
-        var key = (_state.CurrentZoneId, dir);
+        var key = (zoneId, dir);
         if (!_blockedExits.TryGetValue(key, out int blockedAtCount))
             return false;
 
@@ -81,7 +84,7 @@ public class MissionSolver
         if (_zoneChangesSinceBlockedExitRetry - blockedAtCount >= BlockedExitRetryThreshold)
         {
             _blockedExits.Remove(key);
-            Console.WriteLine($"[BOT] Retrying previously blocked exit {dir} from zone {_state.CurrentZoneId}");
+            Console.WriteLine($"[BOT] Retrying previously blocked exit {dir} from zone {zoneId}");
             return false;
         }
         return true;
@@ -157,6 +160,13 @@ public class MissionSolver
     {
         var phase = GetCurrentPhase();
         var world = _worldGenerator.CurrentWorld;
+
+        // Worlds from the original generator carry their whole chain; follow it directly.
+        if (world is { Sectors.Count: > 0 })
+        {
+            MarkZoneVisited();
+            return WithStuckCheck(GetSectorObjective(world) ?? CreateExplorationObjective());
+        }
 
         // Mark current zone as visited
         MarkZoneVisited();
@@ -531,6 +541,11 @@ public class MissionSolver
 
             // Skip NPCs at invalid positions (65535 = unset/placeholder)
             if (!IsValidPosition(npc.X, npc.Y))
+                continue;
+
+            // Combat gives up on an enemy it cannot reach by marking where it stands; honour
+            // that, or the bot walks straight back into the same fight.
+            if (_unreachablePositions.Contains((_state.CurrentZoneId, npc.X, npc.Y)))
                 continue;
 
             int dist = npc.DistanceTo(_state.PlayerX, _state.PlayerY);
@@ -1090,12 +1105,13 @@ public class MissionSolver
                 return firstStep;
             }
 
-            // Expand neighbors
+            // Expand neighbors, skipping exits already found blocked from that zone
             if (world.Connections.TryGetValue(currentZone, out var connections))
             {
-                foreach (var neighbor in new[] { connections.North, connections.South, connections.East, connections.West })
+                foreach (var (neighbor, dir) in new[] { (connections.North, Direction.Up), (connections.South, Direction.Down),
+                                                        (connections.East, Direction.Right), (connections.West, Direction.Left) })
                 {
-                    if (neighbor.HasValue && !visited.Contains(neighbor.Value))
+                    if (neighbor.HasValue && !visited.Contains(neighbor.Value) && !IsExitBlocked(currentZone, dir))
                     {
                         visited.Add(neighbor.Value);
                         queue.Enqueue((neighbor.Value, firstStep)); // Keep tracking the first step
@@ -1199,6 +1215,7 @@ public enum ObjectiveType
     UseXWing,
     EnterDoor,
     PushObject,
+    PullObject,
     Explore,
     FindNpc,
     WalkToPosition  // Walk to a specific position (e.g., to collect R2D2 after talking)

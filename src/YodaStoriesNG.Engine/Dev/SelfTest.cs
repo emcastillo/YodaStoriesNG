@@ -1,4 +1,4 @@
-using YodaStoriesNG.Engine.Data;
+﻿using YodaStoriesNG.Engine.Data;
 using YodaStoriesNG.Engine.Parsing;
 
 namespace YodaStoriesNG.Engine.Dev;
@@ -19,11 +19,18 @@ public static class SelfTest
     public static int Run()
     {
         int failures = 0;
-        failures += Check("IACT round-trip", IactRoundTrip);
-        failures += Check("zone header round-trip", ZoneHeaderRoundTrip);
+        foreach (var game in new[] { GameType.YodaStories, GameType.IndianaJones })
+        {
+            var name = game == GameType.YodaStories ? "Yoda" : "Indy";
+            failures += Check($"IACT round-trip ({name})", () => IactRoundTrip(game));
+            failures += Check($"zone round-trip ({name})", () => ZoneRoundTrip(game));
+        }
+        failures += Check("character tables round-trip (Yoda)", () => CharacterRoundTrip(GameType.YodaStories));
+        failures += Check("character tables round-trip (Indy)", () => CharacterRoundTrip(GameType.IndianaJones));
         failures += Check("data file lookup ignores case", DataFileLookupIgnoresCase);
         failures += Check("menu bar keeps off user32 away from Windows", MenuBarStaysOffUser32);
         failures += Check("file filters convert for portable dialogs", FilterConvertsToExtensions);
+        failures += Check("SDL menu bar works from the keyboard", MenuBarKeyboard);
 
         Console.WriteLine(failures == 0 ? "\nSelf-test PASSED" : $"\nSelf-test FAILED ({failures})");
         return failures == 0 ? 0 : 1;
@@ -44,9 +51,9 @@ public static class SelfTest
         }
     }
 
-    private static void IactRoundTrip()
+    private static void IactRoundTrip(GameType game)
     {
-        var data = Parse(BuildFile());
+        var data = Parse(BuildFile(game), game);
         var zone = Single(data.Zones, "zone");
         var action = Single(zone.Actions, "action");
 
@@ -64,14 +71,38 @@ public static class SelfTest
             $"instruction text was \"{instruction.Text}\"");
     }
 
-    private static void ZoneHeaderRoundTrip()
+    /// <summary>
+    /// Everything world generation reads from a zone: its type, tiles, hotspots, monsters
+    /// and item lists. Two monsters, because a wrong monster size only shows from the
+    /// second one on - which is how every Yoda zone with company used to parse.
+    /// </summary>
+    private static void ZoneRoundTrip(GameType game)
     {
-        var zone = Single(Parse(BuildFile()).Zones, "zone");
+        bool yoda = game == GameType.YodaStories;
+        var zone = Single(Parse(BuildFile(game), game).Zones, "zone");
+
         Assert(zone.Width == 1 && zone.Height == 1, $"size was {zone.Width}x{zone.Height}");
-        Assert(zone.Planet == Planet.Swamp, $"planet was {zone.Planet}");
+        Assert(zone.Type == ZoneType.Town, $"type was {zone.Type}");
+        Assert(zone.Planet == (yoda ? Planet.Swamp : Planet.None), $"planet was {zone.Planet}");
+        Assert(zone.Name == (yoda ? null : "Cairo"), $"name was {zone.Name ?? "null"}");
         Assert(zone.GetTile(0, 0, 0) == 100, $"floor tile was {zone.GetTile(0, 0, 0)}");
         Assert(zone.GetTile(0, 0, 1) == 200, $"object tile was {zone.GetTile(0, 0, 1)}");
         Assert(zone.GetTile(0, 0, 2) == 300, $"roof tile was {zone.GetTile(0, 0, 2)}");
+
+        var hotspot = Single(zone.Objects, "hotspot");
+        Assert(hotspot.Type == ZoneObjectType.PuzzleNPC && hotspot.Argument == 77,
+            $"hotspot was {hotspot.Type} {hotspot.Argument}");
+
+        Assert(zone.Monsters.Count == 2, $"expected 2 monsters, got {zone.Monsters.Count}");
+        var second = zone.Monsters[1];
+        Assert(second.CharacterId == 6 && second.X == 5 && second.Y == 3,
+            $"second monster was character {second.CharacterId} at ({second.X},{second.Y})");
+        if (yoda)
+            Assert(second.Loot == 484 && second.DropsLoot, $"second monster loot was {second.Loot}");
+
+        AssertSequence(zone.RequiredItems.Select(x => x.ToString()).ToList(), new[] { "42" });
+        AssertSequence(zone.ProvidedItems.Select(x => x.ToString()).ToList(), new[] { "43" });
+        AssertSequence(zone.GoalItems.Select(x => x.ToString()).ToList(), yoda ? new[] { "44" } : Array.Empty<string>());
     }
 
     /// <summary>
@@ -113,6 +144,29 @@ public static class SelfTest
     }
 
     /// <summary>
+    /// A Windows menu is reachable with F10 and the arrows for free; the SDL one has to do
+    /// it by hand. Up from the top wraps to Exit, Up again has to step over the divider to
+    /// Load Game, and Enter has to run it and close the menu.
+    /// </summary>
+    private static unsafe void MenuBarKeyboard()
+    {
+        var menu = new UI.MenuBar(new Rendering.BitmapFont());
+        bool loaded = false;
+        menu.OnLoadGame += () => loaded = true;
+
+        foreach (var key in new[] { Hexa.NET.SDL2.SDLKeyCode.F10, Hexa.NET.SDL2.SDLKeyCode.Up,
+                                    Hexa.NET.SDL2.SDLKeyCode.Up, Hexa.NET.SDL2.SDLKeyCode.Return })
+        {
+            var evt = new Hexa.NET.SDL2.SDLEvent { Type = (uint)Hexa.NET.SDL2.SDLEventType.Keydown };
+            evt.Key.Keysym.Sym = (int)key;
+            Assert(menu.HandleEvent(&evt), $"{key} was not consumed");
+        }
+
+        Assert(loaded, "Enter did not run Load Game");
+        Assert(!menu.IsMenuOpen, "menu stayed open after Enter");
+    }
+
+    /// <summary>
     /// zenity, kdialog and osascript all want a plain extension list, and the filter they
     /// have to get it from is a Win32 one whose display halves repeat every pattern in
     /// brackets - so the easy mistake is to take "dta" twice and "*" as an extension.
@@ -135,11 +189,87 @@ public static class SelfTest
     }
 
     /// <summary>
-    /// The smallest file the parser accepts: a version, one 1x1 zone holding one action,
-    /// and an end marker. See docs/DATA-FORMAT.md for what each field is.
+    /// CHWP and CAUX are lists keyed by character index, not arrays in character order, and
+    /// CHAR records are a different size in each game. Reading any of them as fixed-size
+    /// still "works" - it just hands every NPC someone else's health, damage and weapon,
+    /// which is what happened. Only character 1 gets a CHWP/CAUX entry here, so a parser
+    /// that reads them positionally puts the values on character 0 and fails.
     /// </summary>
-    private static byte[] BuildFile()
+    private static void CharacterRoundTrip(GameType game)
     {
+        var data = new DtaParser().Parse(new MemoryStream(BuildCharacterFile(game)), game);
+
+        Assert(data.Characters.Count == 2, $"expected 2 characters, got {data.Characters.Count}");
+        var hero = data.Characters[0];
+        var gun = data.Characters[1];
+
+        Assert(gun.Name == "Blaster", $"second name was \"{gun.Name}\"");
+        Assert(hero.Weapon == null && hero.AuxData == null, "character 0 picked up character 1's CHWP/CAUX");
+        Assert(gun.Weapon is { Reference: 7, Health: 1 },
+            $"weapon was ref {gun.Weapon?.Reference}, health {gun.Weapon?.Health}");
+        Assert(gun.AuxData?.Damage == 4, $"damage was {gun.AuxData?.Damage}");
+        Assert(gun.Frames.ExtensionRight.FirstOrDefault() == 512,
+            $"weapon tile was {gun.Frames.ExtensionRight.FirstOrDefault()}");
+    }
+
+    private static byte[] BuildCharacterFile(GameType game)
+    {
+        var stream = new MemoryStream();
+        var w = new BinaryWriter(stream);
+
+        Tag(w, "VERS");
+        w.Write(new byte[] { 0x00, 0x02, 0x00, 0x00 });
+
+        Tag(w, "CHAR");
+        var charLengthAt = Placeholder(w);
+        var charStart = stream.Position;
+        foreach (var (index, name, weaponTile) in new[] { (0, "Hero", 0), (1, "Blaster", 512) })
+        {
+            w.Write((short)index);
+            Tag(w, "ICHA");
+            var recordAt = Placeholder(w);
+            var recordStart = stream.Position;
+            var nameBytes = new byte[16];
+            System.Text.Encoding.ASCII.GetBytes(name).CopyTo(nameBytes, 0);
+            w.Write(nameBytes);
+            w.Write((short)(index == 0 ? 1 : 4));  // type: hero, weapon
+            w.Write((short)0);                     // movement
+            if (game == GameType.YodaStories)
+                w.Write(new byte[6]);              // the two fields Indiana Jones does not have
+            for (int slot = 0; slot < 24; slot++)
+                w.Write((short)(slot == 7 ? weaponTile : 0));
+            Backfill(w, recordAt, stream.Position - recordStart);
+        }
+        w.Write((short)-1);
+        Backfill(w, charLengthAt, stream.Position - charStart);
+
+        Tag(w, "CHWP");
+        var wpLengthAt = Placeholder(w);
+        var wpStart = stream.Position;
+        w.Write((short)1); w.Write((short)7); w.Write((ushort)1);  // character 1: sound 7, health 1
+        w.Write((short)-1);
+        Backfill(w, wpLengthAt, stream.Position - wpStart);
+
+        Tag(w, "CAUX");
+        var auxLengthAt = Placeholder(w);
+        var auxStart = stream.Position;
+        w.Write((short)1); w.Write((short)4);                      // character 1: damage 4
+        w.Write((short)-1);
+        Backfill(w, auxLengthAt, stream.Position - auxStart);
+
+        Tag(w, "ENDF");
+        w.Write((uint)0);
+        return stream.ToArray();
+    }
+
+    /// <summary>
+    /// One 1x1 zone laid out the way each game really stores it (docs/DATA-FORMAT.md):
+    /// Yoda Stories as a single self-contained ZONE record, Indiana Jones as tiles in ZONE
+    /// plus one entry in each of ZAUX, ZAX2-4, HTSP, ACTN and ZNAM.
+    /// </summary>
+    private static byte[] BuildFile(GameType game)
+    {
+        bool yoda = game == GameType.YodaStories;
         var stream = new MemoryStream();
         var w = new BinaryWriter(stream);
 
@@ -147,41 +277,137 @@ public static class SelfTest
         w.Write(new byte[] { 0x00, 0x02, 0x00, 0x00 });   // 2.0, big-endian halves
 
         Tag(w, "ZONE");
-        var zoneLengthAt = Placeholder(w);
-        var zoneStart = stream.Position;
-
-        w.Write((ushort)1);          // zone count - deliberately wrong; the parser scans instead
-        w.Write((ushort)0);          // padding
-
-        Tag(w, "IZON");
-        w.Write((uint)0);            // record size, unused by the parser
-        w.Write((ushort)1);          // width
-        w.Write((ushort)1);          // height
-        w.Write((byte)0);            // flags
-        w.Write(new byte[5]);        // padding
-        w.Write((byte)Planet.Swamp);
-        w.Write((byte)0);            // unused
-        w.Write((ushort)100);        // grid 0,0 floor
-        w.Write((ushort)200);        // grid 0,0 object
-        w.Write((ushort)300);        // grid 0,0 roof
-        w.Write((ushort)0);          // object count
-
-        Tag(w, "IACT");
-        var actionLengthAt = Placeholder(w);
-        var actionStart = stream.Position;
-
-        w.Write((ushort)1);          // one condition
-        ActionItem(w, (ushort)ConditionOpcode.TileAtIs, new short[] { 511, 3, 4, 1, 0 }, null);
-        w.Write((ushort)1);          // one instruction
-        ActionItem(w, (ushort)InstructionOpcode.SpeakNpc, new short[] { 7, 9, 0, 0, 0 },
-            "May the Force be with you.");
-
-        Backfill(w, actionLengthAt, stream.Position - actionStart);
+        if (yoda)
+        {
+            w.Write((ushort)1);                             // zone count
+            w.Write((ushort)Planet.Swamp);
+            var sizeAt = Placeholder(w);
+            var start = stream.Position;
+            w.Write((ushort)0);                             // zone index
+            Izon(w, yoda);
+            Hotspots(w);
+            Izax(w, yoda);
+            Ids(w, "IZX2", 43);
+            Ids(w, "IZX3");
+            Izx4(w);
+            w.Write((ushort)1);
+            Iact(w, yoda);
+            Backfill(w, sizeAt, stream.Position - start);
+        }
+        else
+        {
+            Section(w, "ZONE", () => { w.Write((ushort)1); Izon(w, yoda); }, tagWritten: true);
+            Section(w, "ZAUX", () => Izax(w, yoda));
+            Section(w, "ZAX2", () => Ids(w, "IZX2", 43));
+            Section(w, "ZAX3", () => Ids(w, "IZX3"));
+            Section(w, "ZAX4", () => Izx4(w));
+            Section(w, "HTSP", () => { w.Write((short)0); Hotspots(w); w.Write((short)-1); });
+            Section(w, "ACTN", () => { w.Write((short)0); w.Write((ushort)1); Iact(w, yoda); w.Write((short)-1); });
+            Section(w, "ZNAM", () =>
+            {
+                w.Write((short)0);
+                var name = new byte[16];
+                System.Text.Encoding.ASCII.GetBytes("Cairo").CopyTo(name, 0);
+                w.Write(name);
+                w.Write((short)-1);
+            });
+        }
 
         Tag(w, "ENDF");
-        Backfill(w, zoneLengthAt, stream.Position - zoneStart);
-
         return stream.ToArray();
+    }
+
+    private static void Section(BinaryWriter w, string tag, System.Action body, bool tagWritten = false)
+    {
+        if (!tagWritten) Tag(w, tag);
+        var lengthAt = Placeholder(w);
+        var start = w.BaseStream.Position;
+        body();
+        Backfill(w, lengthAt, w.BaseStream.Position - start);
+    }
+
+    private static void Izon(BinaryWriter w, bool yoda)
+    {
+        Tag(w, "IZON");
+        w.Write((uint)0);                // record size, unused by the parser
+        w.Write((ushort)1);              // width
+        w.Write((ushort)1);              // height
+        w.Write((uint)ZoneType.Town);
+        if (yoda)
+        {
+            w.Write((ushort)0);          // sector counter
+            w.Write((ushort)Planet.Swamp);
+        }
+        w.Write((ushort)100);            // grid 0,0 floor
+        w.Write((ushort)200);            // grid 0,0 object
+        w.Write((ushort)300);            // grid 0,0 roof
+    }
+
+    private static void Hotspots(BinaryWriter w)
+    {
+        w.Write((ushort)1);
+        w.Write((uint)ZoneObjectType.PuzzleNPC);
+        w.Write((short)0);               // x
+        w.Write((short)0);               // y
+        w.Write((ushort)1);              // enabled
+        w.Write((short)77);              // argument
+    }
+
+    private static void Izax(BinaryWriter w, bool yoda)
+    {
+        Tag(w, "IZAX");
+        var sizeAt = Placeholder(w);
+        var start = w.BaseStream.Position - 8;
+        w.Write((ushort)0);              // unknown
+        w.Write((ushort)2);
+        foreach (var (character, x, y) in new[] { (5, 1, 2), (6, 5, 3) })
+        {
+            w.Write((ushort)character);
+            w.Write((ushort)x);
+            w.Write((ushort)y);
+            if (yoda)
+            {
+                w.Write((short)(character == 6 ? 484 : -1));   // loot
+                w.Write((uint)(character == 6 ? 1 : 0));       // drops loot
+                w.Write(new byte[32]);                         // waypoints
+            }
+        }
+        w.Write((ushort)1); w.Write((ushort)42);               // required items
+        if (yoda) { w.Write((ushort)1); w.Write((ushort)44); } // goal items
+        Backfill(w, sizeAt, w.BaseStream.Position - start);
+    }
+
+    private static void Ids(BinaryWriter w, string tag, params ushort[] ids)
+    {
+        Tag(w, tag);
+        w.Write((uint)(10 + ids.Length * 2));
+        w.Write((ushort)ids.Length);
+        foreach (var id in ids) w.Write(id);
+    }
+
+    private static void Izx4(BinaryWriter w)
+    {
+        Tag(w, "IZX4");
+        w.Write((uint)10);
+        w.Write((ushort)0);
+    }
+
+    /// <summary>Indiana Jones writes 0 for every IACT size; only the counts frame it.</summary>
+    private static void Iact(BinaryWriter w, bool yoda)
+    {
+        Tag(w, "IACT");
+        var lengthAt = Placeholder(w);
+        var start = w.BaseStream.Position;
+
+        // Indiana Jones numbers its opcodes differently; the parser must hand back Yoda's.
+        w.Write((ushort)1);          // one condition
+        ActionItem(w, yoda ? (ushort)ConditionOpcode.TileAtIs : (ushort)0x13, new short[] { 511, 3, 4, 1, 0 }, null);
+        w.Write((ushort)1);          // one instruction
+        ActionItem(w, yoda ? (ushort)InstructionOpcode.SpeakNpc : (ushort)0x1c, new short[] { 7, 9, 0, 0, 0 },
+            "May the Force be with you.");
+
+        if (yoda)
+            Backfill(w, lengthAt, w.BaseStream.Position - start);
     }
 
     private static void ActionItem(BinaryWriter w, ushort opcode, short[] arguments, string? text)
@@ -195,8 +421,8 @@ public static class SelfTest
         w.Write(bytes);
     }
 
-    private static GameData Parse(byte[] bytes) =>
-        new DtaParser().Parse(new MemoryStream(bytes), GameType.YodaStories);
+    private static GameData Parse(byte[] bytes, GameType game) =>
+        new DtaParser().Parse(new MemoryStream(bytes), game);
 
     private static void Tag(BinaryWriter w, string tag) =>
         w.Write(System.Text.Encoding.ASCII.GetBytes(tag));

@@ -17,7 +17,7 @@ The original roadmap was a list of WebFun-style development tools. All of it shi
 
 Beyond that: both games parse and play, all 36 conditions and 38 instructions are
 implemented, palette animation is authentic, there is a mission bot, a score system, save
-and load, controller support, a native menu bar, and a screenshot harness that regenerates
+and load, controller support with a pause menu, mixed sound effects, a native menu bar, and a screenshot harness that regenerates
 every image in these docs from a real run.
 
 CI builds and self-tests every push on GitHub Actions, and a `v*` tag publishes
@@ -30,17 +30,35 @@ pipeline, which deployed to a network share on a server that no longer exists, i
 
 Ordered by how much they actually matter.
 
-### Indiana Jones has no mission chain
+### Indiana Jones: what is still open
 
-**Where:** `src/YodaStoriesNG.Engine/Game/WorldGenerator.cs`
+Indiana Jones now generates the original's worlds, runs its scripts under its own opcode
+table, trades through the original's hotspot puzzles (`Game/SectorPuzzles.cs`), draws in its
+own palette, starts in the town where Marcus hands over the first artefact, and has a bot
+that follows the chain. Still open:
 
-The generator is written around Yoda Stories' Dagobah-plus-planets structure. On a `.daw`
-world it logs `No Dagobah zones found!` and produces a browsable world of real zones with no
-puzzle sequence to solve. Everything else about Indiana Jones works - parsing, rendering,
-palette cycling, combat.
+- **Two instructions are undecoded** (`0x14`, `0x23`) and two conditions are the least
+  certain of the table - see [SCRIPTING.md](SCRIPTING.md#indiana-jones-opcode-numbers).
+- **The bot solves puzzles but has not finished a whole chain yet.** On the reference world
+  (`YSNG_SEED=5`) it takes the briefing, fetches dynamite and blasts a blockade, solves a
+  ledge-and-floor-switch room, pulls a crate off the Nitro, and reaches step 2 of 5.
+  What stops it next: islands (vehicle travel planning is in, untested end to end), boulder
+  rows over pressure plates (a greedy push/pull heuristic, not a Sokoban solver), and zones
+  whose layout dice are not seeded, so the same seed can differ between runs.
+  `YSNG_SEED=5 YSNG_BOT_SECONDS=600` reproduces it.
+- **Handing the artefact to Marcus** is scripted in his office but nothing requires it:
+  the game is won when the artefact is taken (`WinGame` fires there).
+- **Everything learned here is Indiana Jones-only for now** - the character-type field,
+  the NPC-hotspot fix, `SectorPuzzles`, the generator. Yoda Stories gets them when it moves
+  to the original generator.
 
-This is the single largest gap. It also blocks the bot from playing Indiana Jones, and it is
-why `gameplay-indy.png` is a picture of a place rather than of a game in progress.
+### The bot cannot find R2-D2 when he is a zone monster
+
+**Where:** `src/YodaStoriesNG.Engine/Bot/MissionSolver.cs`, `FindR2D2InDagobah`
+
+It searches Dagobah zones' hotspots for R2-D2 but not their `IZAX` monsters, which is where
+he usually is, so most runs log `Could not find R2D2 anywhere on Dagobah!` and set off
+without the locator.
 
 ### Opcodes `0x19` and `0x1A` are evaluated as the wrong condition
 
@@ -57,14 +75,14 @@ Fixing it means also reconciling how sector counters are stored: this engine key
 zone compared against `arg0`. See
 [SCRIPTING.md](SCRIPTING.md#known-divergences-from-the-original).
 
-### `TNAM` parses zero tile names
+### Capture harness loses the D3D device after the tool windows
 
-**Where:** `src/YodaStoriesNG.Engine/Parsing/DtaParser.cs`
+**Where:** `src/YodaStoriesNG.Engine/Dev/Capture.cs`
 
-`Loaded 0 tile names` on a healthy Yoda Stories file. The section is present and the parser
-runs, but the record layout is not right, so every place that would show an item's name
-("Lightsaber") falls back to `Tile#510`. Cosmetic, but it makes dialogue and the debug tools
-noticeably less readable.
+After the capture timeline opens and closes the tool windows, every later capture of the
+main window fails with `RenderReadPixels failed: GetRenderTargetData(): DEVICELOST`. That
+is why `r2d2-help.png` has not regenerated. The pause-menu shot is taken before the tool
+windows for this reason. The game itself keeps rendering; only readback breaks.
 
 ### `Wait` does not wait
 
@@ -102,10 +120,11 @@ synthesise.
 
 Roughly in order of value per unit of work.
 
-1. **Fix `TNAM`.** Small, self-contained, and improves every screen that names an item.
+1. **Teach the bot the Indiana Jones chain.** The world is there; the bot is the last
+   thing between Indiana Jones and a game that plays itself.
 2. **Reconcile the sector-counter opcodes.** Removes the last known scripting divergence.
-3. **Generalise world generation to Indiana Jones.** The big one. It unlocks Indiana Jones
-   as a game rather than a viewer, and the bot along with it.
+3. **Decide whether Yoda Stories moves to the original generator.** The port already
+   generates Yoda worlds; it would make them the original's and retire the heuristic one.
 4. **Extend the self-test to the whole container format.** `SelfTest.cs` already builds a
    data file by hand; extending it to tiles, characters and puzzles is more of the same, and
    would have caught both the IACT bug and the `TNAM` one.

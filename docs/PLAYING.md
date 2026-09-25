@@ -92,8 +92,17 @@ time - the engine picks it up and says so on screen.
 | `X` | Travel |
 | `Y` | Show objective |
 | `LB` / `RB` | Cycle weapon |
-| `Start` | New game |
-| `Back` | Quit |
+| `Start` / `Back` | Pause menu |
+| Any button | Start the game from the title screen |
+
+**The pause menu** is the controller's way into everything the menu bar does. It pauses
+the game and offers Resume, Save and Load, New Game, and toggles for world size, graphics
+scale, sound, the mission bot and the menu bar, plus Controller Controls, High Scores and
+Quit. The
+D-pad or left stick moves, `A` picks, `B` or `Start` closes it. The arrow keys, `Enter`
+and `Esc` work too.
+
+![The pause menu over a live game](shots/pause-menu.png)
 
 There is no controller binding for the debug tools. Use the keyboard.
 
@@ -114,7 +123,17 @@ Windows draws them with a real native menu bar, outside the window at the OS's o
 (`UI/NativeMenuBar.cs`). That is user32, which Linux and macOS do not have, so there they
 are drawn by SDL into a strip the window reserves above the game (`UI/MenuBar.cs`) - it
 takes no gameplay area, and the menus behave the same way: click a title to open it, drag
-along the bar to move between them, `Esc` or a click elsewhere to dismiss.
+along the bar to move between them, `Esc` or a click elsewhere to dismiss. The keyboard
+works too, as it does on Windows: `F10` opens the bar, the arrows move through it, `Enter`
+picks an item.
+
+**Playing with a controller?** Config -> Hide Menu Bar puts the bar away on every
+platform, and on Linux and macOS the window shrinks to just the game. Everything it offered
+is in the controller's pause menu, which also has a Menu Bar toggle; `F10` brings it back
+too. The choice is remembered.
+
+**No GPU is fine.** A machine with no accelerated render driver - a VM, remote X, a bare
+Linux box - gets SDL's software renderer instead of a window that refuses to open.
 
 **Save As, Load Game and Select Data File need a file picker**, and off Windows the game
 asks the desktop for its own: `osascript` on macOS, `zenity` or `kdialog` on Linux,

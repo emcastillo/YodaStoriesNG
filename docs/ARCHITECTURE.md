@@ -38,7 +38,7 @@ Roughly 23,800 lines of C# across 48 files. The distribution is lopsided on purp
 | `Data/` | 566 | Plain data classes and the opcode enums. |
 | `Dev/` | 473 | Screenshot harness and the self-test. |
 | `Debug/` | 384 | The console inspector. |
-| `Audio/` | 106 | Sound playback. |
+| `Audio/` | 179 | Sound effects: WAV decode and a small mixer feeding SDL's audio queue. |
 
 ---
 

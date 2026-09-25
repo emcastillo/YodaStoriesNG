@@ -139,6 +139,7 @@ Convert-Still 'yoda-assets'        'asset-viewer'
 Convert-Still 'yoda-save-editor'   'save-editor'
 Convert-Still 'yoda-score'         'score-screen'
 Convert-Still 'yoda-r2d2-help'     'r2d2-help'
+Convert-Still 'yoda-pause'         'pause-menu'
 
 if (-not $KeepFrames) {
     Remove-Item -Recurse -Force $frames

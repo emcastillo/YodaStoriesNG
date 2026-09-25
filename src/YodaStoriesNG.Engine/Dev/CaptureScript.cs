@@ -61,16 +61,16 @@ public unsafe partial class GameEngine
         // --- Gameplay: let the bot play so the shot has NPCs, items and a real HUD.
         t.Add((after + 0.5, () => { _showingTitleScreen = false; _titleScreen?.Hide(); StartNewGame(); }));
         t.Add((after + 1.0, EnableBot));
-        // Indiana Jones worlds do not generate a mission chain yet, so its bot leaves the
-        // hero standing in an empty field. Yoda's bot finds its own way somewhere worth
-        // photographing, so only Indy needs the nudge.
-        if (game == "indy")
-            t.Add((after + 16.0, FindZoneWithContent));
 
         // Park the bot and let its toast messages ("Can't go that way", zone banners)
         // expire before the shutter, so the frame shows the game and not the harness.
         t.Add((after + 17.0, () => { DisableBot(); _messages.Clear(); }));
         t.Add((after + 18.0, () => Dev.Capture.Request("game", $"{game}-gameplay")));
+
+        // --- The controller pause overlay, over that same view.
+        t.Add((after + 18.3, () => _controllerOverlay?.Open()));
+        t.Add((after + 18.6, () => Dev.Capture.Request("game", $"{game}-pause")));
+        t.Add((after + 18.8, () => _controllerOverlay?.Close()));
 
         // --- Palette animation: park in the zone that uses the most cycling colours.
         double pal = after + 19.0;

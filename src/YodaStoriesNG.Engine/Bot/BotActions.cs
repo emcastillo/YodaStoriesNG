@@ -82,6 +82,12 @@ public class BotActions
             _state.ZoneNPCs,
             _state.CurrentZoneId);
 
+        // Blocks are mostly monsters that were standing in the way; once they have moved on
+        // they would wall the bot in for as long as it stays in this zone. Try again without.
+        if ((_currentPath == null || _currentPath.Count == 0) && _pathfinder.ForgetTemporaryBlocks())
+            _currentPath = _pathfinder.FindPath(_state.CurrentZone, _state.PlayerX, _state.PlayerY, x, y,
+                _state.ZoneNPCs, _state.CurrentZoneId);
+
         if (_currentPath == null || _currentPath.Count == 0)
         {
             Console.WriteLine($"[BOT] No path to ({x},{y})");
@@ -119,10 +125,16 @@ public class BotActions
             x, y,
             _state.ZoneNPCs,
             _state.CurrentZoneId);
+        if ((result == null || result.Value.Path == null) && _pathfinder.ForgetTemporaryBlocks())
+            result = _pathfinder.FindPathToAdjacent(_state.CurrentZone, _state.PlayerX, _state.PlayerY, x, y,
+                _state.ZoneNPCs, _state.CurrentZoneId);
 
         if (result == null || result.Value.Path == null)
         {
-            Console.WriteLine($"[BOT] No path to adjacent of ({x},{y})");
+            Console.WriteLine($"[BOT] No path to adjacent of ({x},{y}) from ({_state.PlayerX},{_state.PlayerY}); around it: " +
+                string.Join(" ", new[] { (0, -1), (0, 1), (-1, 0), (1, 0) }.Select(o =>
+                    $"({x + o.Item1},{y + o.Item2})={_state.CurrentZone.GetTile(x + o.Item1, y + o.Item2, 1)}" +
+                    (_pathfinder.IsWalkable(_state.CurrentZone, x + o.Item1, y + o.Item2, _state.ZoneNPCs, _state.CurrentZoneId) ? "" : "!"))));
             _actionState = BotActionState.Completed;
             return false;
         }
@@ -556,9 +568,40 @@ public class BotActions
             return;
         }
 
-        OnAction?.Invoke(BotActionType.Move, _targetX, _targetY, _pushDirection.Value);
+        if (_pulling)
+            OnAction?.Invoke(BotActionType.Pull, 0, 0, _pushDirection.Value);
+        else
+            OnAction?.Invoke(BotActionType.Move, _targetX, _targetY, _pushDirection.Value);
         _actionState = BotActionState.Completed;
         _pushDirection = null;
+        _pulling = false;
+    }
+
+    private bool _pulling;
+
+    /// <summary>
+    /// Drags the block at (x, y) one square in <paramref name="dir"/>: stand on its
+    /// <paramref name="dir"/> side and step away, pulling. For a block wedged where no
+    /// push can move it (a crate in a corner with the treasure under it).
+    /// </summary>
+    public bool PullObject(int x, int y, Direction dir)
+    {
+        var (dx, dy) = dir switch { Direction.Up => (0, -1), Direction.Down => (0, 1), Direction.Left => (-1, 0), _ => (1, 0) };
+        _targetX = x;
+        _targetY = y;
+        _pushDirection = dir;
+        _pulling = true;
+
+        if (_state.PlayerX != x + dx || _state.PlayerY != y + dy)
+        {
+            _actionState = BotActionState.MovingToPush;
+            CurrentActionDescription = $"Moving to pull object at ({x},{y})";
+            return MoveTo(x + dx, y + dy);
+        }
+
+        _actionState = BotActionState.Pushing;
+        PerformPush();
+        return true;
     }
 
     private static bool IsAdjacent(int x1, int y1, int x2, int y2)
@@ -598,5 +641,6 @@ public enum BotActionType
     Attack,
     Talk,
     UseItem,
-    UseXWing
+    UseXWing,
+    Pull,       // step in the direction given, dragging the block behind along
 }

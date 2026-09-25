@@ -32,6 +32,13 @@ public unsafe interface IMenuBar : IDisposable
     event Action? OnSelectDataFile;
     event Action? OnShowAbout;
     event Action? OnShowHighScores;
+    event Action? OnHideMenuBar;
+
+    /// <summary>
+    /// Whether the bar is showing. Controller players can put it away and use the pause
+    /// menu instead; F10 or the pause menu brings it back.
+    /// </summary>
+    bool Visible { get; set; }
 
     /// <summary>True while a dropdown is open, so the game can ignore input underneath it.</summary>
     bool IsMenuOpen { get; }

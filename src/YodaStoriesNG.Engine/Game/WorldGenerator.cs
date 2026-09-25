@@ -150,10 +150,14 @@ public class WorldGenerator
         Console.WriteLine("\n-- IZAX Entity Data for Dagobah Zones --");
         foreach (var zone in swampZones)
         {
-            if (zone.AuxData?.RawData != null && zone.AuxData.RawData.Length > 0)
+            if (zone.Monsters.Count > 0)
             {
-                Console.WriteLine($"\n  Zone {zone.Id} IZAX ({zone.AuxData.RawData.Length} bytes):");
-                DumpIzaxEntities(zone.AuxData.RawData);
+                Console.WriteLine($"\n  Zone {zone.Id} IZAX:");
+                foreach (var m in zone.Monsters)
+                {
+                    var name = m.CharacterId < _gameData.Characters.Count ? _gameData.Characters[m.CharacterId].Name : "?";
+                    Console.WriteLine($"    {name} (char {m.CharacterId}) at ({m.X},{m.Y}), loot {m.Loot}");
+                }
             }
         }
 
@@ -269,64 +273,6 @@ public class WorldGenerator
     }
 
     /// <summary>
-    /// Parses and dumps IZAX entity data.
-    /// IZAX format: 4 bytes header, 2 bytes count, then for each entity: charId(2), x(2), y(2), itemTile(2), itemQuantity(2), data(6)
-    /// </summary>
-    private void DumpIzaxEntities(byte[] izaxData)
-    {
-        if (izaxData.Length < 6) return;
-
-        using var ms = new MemoryStream(izaxData);
-        using var reader = new BinaryReader(ms);
-
-        try
-        {
-            // Skip 4-byte header, then read entity count (2 bytes)
-            reader.ReadUInt32();
-            var entityCount = reader.ReadUInt16();
-            Console.WriteLine($"    Entity count: {entityCount}");
-
-            // Each entity is 16 bytes: charId(2) + x(2) + y(2) + itemTile(2) + itemQty(2) + data(6)
-            for (int i = 0; i < entityCount && ms.Position + 16 <= ms.Length; i++)
-            {
-                var charId = reader.ReadUInt16();
-                var x = reader.ReadUInt16();
-                var y = reader.ReadUInt16();
-                var itemTile = reader.ReadUInt16();
-                var itemQty = reader.ReadUInt16();
-                var data = reader.ReadBytes(6);
-
-                string charName = "";
-                if (charId < _gameData.Characters.Count)
-                    charName = _gameData.Characters[charId].Name ?? "";
-                else if (charId == 0xFFFF)
-                    charName = "(none)";
-
-                Console.WriteLine($"    Entity {i}: CharID={charId} ({charName}) at ({x},{y}), item={itemTile}, qty={itemQty}");
-            }
-
-            // Also dump raw hex of first 64 bytes for manual inspection
-            ms.Position = 0;
-            Console.Write("    Raw hex: ");
-            for (int i = 0; i < Math.Min(64, izaxData.Length); i++)
-            {
-                Console.Write($"{izaxData[i]:X2} ");
-            }
-            Console.WriteLine();
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"    Parse error: {ex.Message}");
-            Console.Write("    Raw hex: ");
-            for (int i = 0; i < Math.Min(64, izaxData.Length); i++)
-            {
-                Console.Write($"{izaxData[i]:X2} ");
-            }
-            Console.WriteLine();
-        }
-    }
-
-    /// <summary>
     /// Generates a new world with a random mission.
     /// </summary>
     public WorldMap GenerateWorld() => GenerateWorld(WorldSize.Medium);
@@ -336,6 +282,9 @@ public class WorldGenerator
     /// </summary>
     public WorldMap GenerateWorld(WorldSize size)
     {
+        if (_gameData.GameType == GameType.IndianaJones)
+            return GenerateOriginalWorld(size);
+
         // Set grid size based on world size
         _gridSize = size == WorldSize.XtraLarge ? 15 : 10;
 
@@ -373,6 +322,176 @@ public class WorldGenerator
     }
 
     /// <summary>
+    /// Indiana Jones: the original's algorithm (<see cref="OriginalWorldGenerator"/>),
+    /// reseeding when a seed cannot be completed, as the original does. The result is
+    /// dressed as the same WorldMap the rest of the engine, the bot and the map viewer use.
+    /// </summary>
+    private WorldMap GenerateOriginalWorld(WorldSize size)
+    {
+        _gridSize = 10;
+
+        // YSNG_SEED makes the world repeatable - for chasing a bug through one world.
+        var seeds = int.TryParse(Environment.GetEnvironmentVariable("YSNG_SEED"), out var fixedSeed)
+            ? new Random(fixedSeed) : _random;
+
+        OriginalWorldGenerator? generator = null;
+        for (int attempt = 1; generator == null; attempt++)
+        {
+            var candidate = new OriginalWorldGenerator(_gameData, seeds.Next());
+            try
+            {
+                candidate.Generate(Planet.None, size);
+                generator = candidate;
+            }
+            catch (WorldGenerationException ex) when (attempt < 50)
+            {
+                Console.WriteLine($"[WORLD] Reseeding after attempt {attempt}: {ex.Message}");
+            }
+        }
+
+        // Items and NPCs live in hotspot arguments; start from the file's, then apply this world's.
+        foreach (var zone in _gameData.Zones)
+            foreach (var hotspot in zone.Objects)
+            {
+                hotspot.Argument = hotspot.FileArgument;
+                hotspot.Enabled = ZoneObject.EnabledByDefault(hotspot.Type);
+            }
+        foreach (var (zoneId, arguments) in generator.HotspotArguments)
+            for (int i = 0; i < arguments.Length; i++)
+            {
+                var hotspot = _gameData.Zones[zoneId].Objects[i];
+                if (hotspot.Argument == (ushort)arguments[i]) continue;
+                hotspot.Argument = (ushort)arguments[i];
+                hotspot.Enabled = true; // the generator put something here
+            }
+
+        var world = new WorldMap
+        {
+            Planet = Planet.None,
+            Grid = new int?[10, 10],
+            TypeMap = new SectorType[10, 10],
+            OrderMap = new int[10, 10],
+        };
+        CurrentWorld = world;
+
+        var outdoorZones = new HashSet<int>();
+        for (int y = 0; y < 10; y++)
+        for (int x = 0; x < 10; x++)
+        {
+            var sector = generator.Sectors[x + 10 * y];
+            world.TypeMap[y, x] = generator.Map.TypeMap[x + 10 * y];
+            world.OrderMap[y, x] = sector.PuzzleIndex;
+            if (sector.Zone < 0) continue;
+
+            world.Grid[y, x] = sector.Zone;
+            outdoorZones.Add(sector.Zone);
+            // Scripts ask the sector about any zone in it, rooms included.
+            foreach (var zoneId in ZoneAndRooms(sector.Zone))
+                world.Sectors.TryAdd(zoneId, sector);
+
+            if (sector.Type == ZoneType.Town)
+            {
+                world.StartingZoneId = world.LandingZoneId = sector.Zone;
+                world.LandingPosition = (x, y);
+            }
+            if (sector.Type == ZoneType.Goal)
+            {
+                world.ObjectiveZoneId = sector.Zone;
+                world.ObjectivePosition = (x, y);
+            }
+            if (sector.RequiredItem >= 0) world.RequiredItems.Add(sector.RequiredItem);
+        }
+
+        SetupZoneConnections();
+        AssociateRoomZones(new List<Zone>(), outdoorZones);
+
+        world.Strain1 = generator.Strain1ByIndex;
+        world.Strain2 = generator.Strain2ByIndex;
+        world.Mission = CurrentMission = BuildOriginalMission(generator);
+        LogMissionDetails(CurrentMission);
+        world.PrintMapVisualization();
+        return world;
+    }
+
+    /// <summary>
+    /// The puzzle chain in the order it is played: find the first item, then each puzzle
+    /// sector by index, ending at the goal zone that hands over the mission's item.
+    /// </summary>
+    private Mission BuildOriginalMission(OriginalWorldGenerator generator)
+    {
+        var goal = generator.GoalPuzzle;
+        string Text(Puzzle p, params int[] order) =>
+            order.Select(i => i < p.Strings.Count ? p.Strings[i] : "").FirstOrDefault(t => t.Length > 0) ?? "";
+
+        var mission = new Mission
+        {
+            Id = goal.Id,
+            Name = GetItemName(goal.Item1),
+            Planet = Planet.None,
+            Description = Text(goal, 2, 3, 0),
+            GoalPuzzle = goal,
+        };
+
+        var steps = generator.Sectors.Where(s => s.PuzzleIndex >= 0 && s.Zone >= 0).OrderBy(s => s.PuzzleIndex).ToList();
+        var strain = generator.Strain1;
+
+        int firstItem = steps.Count > 0 ? steps[0].RequiredItem : -1;
+        var town = generator.Sectors.FirstOrDefault(s => s.Type == ZoneType.Town);
+        var finder = generator.Sectors.FirstOrDefault(s => s.Type == ZoneType.Find && s.FindItem == firstItem && firstItem >= 0);
+        if (_gameData.GameType == GameType.IndianaJones && town != null)
+            mission.PuzzleChain.Add(new PuzzleStep
+            {
+                Puzzle = goal,
+                RewardItemId = firstItem,
+                ZoneId = town.Zone,
+                Hint = "See Marcus in his office.",
+            });
+        else if (finder != null)
+            mission.PuzzleChain.Add(new PuzzleStep
+            {
+                Puzzle = goal,
+                RewardItemId = firstItem,
+                ZoneId = finder.Zone,
+                Hint = $"Find the {GetItemName(firstItem)}.",
+            });
+
+        foreach (var sector in steps)
+        {
+            var puzzle = sector.PuzzleIndex < strain.Count ? strain[sector.PuzzleIndex] : goal;
+            mission.PuzzleChain.Add(new PuzzleStep
+            {
+                Puzzle = puzzle,
+                RequiredItemId = Math.Max(0, sector.RequiredItem),
+                RewardItemId = Math.Max(0, sector.FindItem),
+                ZoneId = sector.Zone,
+                // Transaction and Goal puzzles open with the NPC saying what they need; an
+                // Offer puzzle's only line is its giver's, which would name the wrong item here.
+                Hint = puzzle.Type is PuzzleType.Transaction or PuzzleType.Goal
+                    ? Text(puzzle, 0)
+                    : $"Use the {GetItemName(sector.RequiredItem)} here.",
+            });
+        }
+
+        return mission;
+    }
+
+    /// <summary>A zone and every room behind its doors.</summary>
+    private IEnumerable<int> ZoneAndRooms(int zoneId)
+    {
+        var seen = new HashSet<int>();
+        var pending = new Stack<int>();
+        pending.Push(zoneId);
+        while (pending.Count > 0)
+        {
+            var id = pending.Pop();
+            if (id < 0 || id >= _gameData.Zones.Count || !seen.Add(id)) continue;
+            yield return id;
+            foreach (var door in _gameData.Zones[id].Objects.Where(o => o.Type == ZoneObjectType.DoorEntrance))
+                pending.Push(door.Argument);
+        }
+    }
+
+    /// <summary>
     /// Logs mission details to console.
     /// </summary>
     private void LogMissionDetails(Mission mission)
@@ -403,7 +522,7 @@ public class WorldGenerator
         // Find Quest-type puzzles that have meaningful strings (Quest type is most common: 73 puzzles)
         // First try puzzles not yet used in this cycle
         var questPuzzles = _gameData.Puzzles
-            .Where(p => p.Type == PuzzleType.Quest && p.Strings.Count > 0 && p.Strings.Any(s => !string.IsNullOrEmpty(s)))
+            .Where(p => p.Type == PuzzleType.Transaction && p.Strings.Count > 0 && p.Strings.Any(s => !string.IsNullOrEmpty(s)))
             .Where(p => !_usedGoalPuzzles.Contains(p.Id))
             .ToList();
 
@@ -411,7 +530,7 @@ public class WorldGenerator
         if (questPuzzles.Count == 0)
         {
             questPuzzles = _gameData.Puzzles
-                .Where(p => p.Type == PuzzleType.Quest && p.Strings.Count > 0 && p.Strings.Any(s => !string.IsNullOrEmpty(s)))
+                .Where(p => p.Type == PuzzleType.Transaction && p.Strings.Count > 0 && p.Strings.Any(s => !string.IsNullOrEmpty(s)))
                 .OrderBy(_ => _random.Next())
                 .ToList();
             _usedGoalPuzzles.Clear();  // Reset tracking when cycling
@@ -496,7 +615,7 @@ public class WorldGenerator
             // Step 1: Trade starting item for intermediate item
             mission.PuzzleChain.Add(new PuzzleStep
             {
-                Puzzle = new Puzzle { Type = PuzzleType.Trade, Strings = { "Find a trader" } },
+                Puzzle = new Puzzle { Type = PuzzleType.Transaction, Strings = { "Find a trader" } },
                 RequiredItemId = itemTiles[0].Id,
                 RewardItemId = itemTiles[1].Id,
                 Hint = "Find someone willing to trade."
@@ -505,7 +624,7 @@ public class WorldGenerator
             // Step 2: Use intermediate item to get key
             mission.PuzzleChain.Add(new PuzzleStep
             {
-                Puzzle = new Puzzle { Type = PuzzleType.Use, Strings = { "Use the item" } },
+                Puzzle = new Puzzle { Type = PuzzleType.Offer, Strings = { "Use the item" } },
                 RequiredItemId = itemTiles[1].Id,
                 RewardItemId = itemTiles[2].Id,
                 Hint = "Use the item in the right place."
@@ -577,13 +696,12 @@ public class WorldGenerator
             }
 
             // Also check IZAX entity data for NPCs with items
-            if (zone.AuxData?.Entities != null)
             {
-                foreach (var entity in zone.AuxData.Entities)
+                foreach (var entity in zone.Monsters)
                 {
-                    if (entity.ItemTileId > 0 && entity.ItemTileId != 0xFFFF)
+                    if (entity.Loot > 0)
                     {
-                        itemLocations.Add((entity.ItemTileId, zone.Id, entity.X, entity.Y));
+                        itemLocations.Add((entity.Loot - 1, zone.Id, entity.X, entity.Y));
                     }
                     if (entity.CharacterId > 0 && entity.CharacterId != 0xFFFF)
                     {
@@ -610,7 +728,7 @@ public class WorldGenerator
             var firstItem = itemLocations[0];
             chainSteps.Add(new PuzzleStep
             {
-                Puzzle = new Puzzle { Type = PuzzleType.Quest, Strings = { "Find an item" } },
+                Puzzle = new Puzzle { Type = PuzzleType.Transaction, Strings = { "Find an item" } },
                 RequiredItemId = 0,  // No item required - just find it
                 RewardItemId = firstItem.ItemId,
                 ZoneId = firstItem.ZoneId,
@@ -627,7 +745,7 @@ public class WorldGenerator
 
                 chainSteps.Add(new PuzzleStep
                 {
-                    Puzzle = new Puzzle { Type = PuzzleType.Trade, Strings = { "Trade with someone" } },
+                    Puzzle = new Puzzle { Type = PuzzleType.Transaction, Strings = { "Trade with someone" } },
                     RequiredItemId = itemLocations[i].ItemId,
                     RewardItemId = nextItem.ItemId,
                     ZoneId = npcZone.ZoneId,
@@ -1342,6 +1460,16 @@ public class WorldMap
 
     // Dagobah zones (fixed starting area)
     public List<int> DagobahZones { get; set; } = new();
+
+    /// <summary>
+    /// Worlds from OriginalWorldGenerator: the sector each zone (or room) belongs to, which
+    /// is what zone scripts ask about. Empty for worlds from the older generator.
+    /// </summary>
+    public Dictionary<int, Sector> Sectors { get; } = new();
+
+    /// <summary>The puzzle strains a sector's PuzzleIndex points into (OriginalWorldGenerator worlds).</summary>
+    public IReadOnlyList<Puzzle?> Strain1 { get; set; } = Array.Empty<Puzzle?>();
+    public IReadOnlyList<Puzzle?> Strain2 { get; set; } = Array.Empty<Puzzle?>();
 
     // Zone connections (for edge traversal)
     public Dictionary<int, ZoneConnections> Connections { get; set; } = new();

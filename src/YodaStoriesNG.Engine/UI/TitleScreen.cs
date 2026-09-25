@@ -196,7 +196,7 @@ public unsafe class TitleScreen : IDisposable
             }
         }
 
-        if (evt->Type == (uint)SDLEventType.Mousebuttondown)
+        if (evt->Type is (uint)SDLEventType.Mousebuttondown or (uint)SDLEventType.Controllerbuttondown)
         {
             StartGame();
             return true;

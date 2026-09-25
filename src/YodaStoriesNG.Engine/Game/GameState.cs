@@ -40,6 +40,12 @@ public class GameState
     public Dictionary<int, int> Variables { get; set; } = new();
     public Dictionary<int, int> Counters { get; set; } = new();
 
+    /// <summary>Each zone's random value, from RollDice/SetRandom (WebFun zone.random).</summary>
+    public Dictionary<int, int> ZoneRandom { get; set; } = new();
+
+    /// <summary>Actions turned off by DisableAction, as (zone id, action index), for the rest of the game.</summary>
+    public HashSet<(int Zone, int Action)> DisabledActions { get; set; } = new();
+
     // Quest state
     public HashSet<int> SolvedZones { get; set; } = new();
     public int GamesWon { get; set; }
@@ -110,6 +116,8 @@ public class GameState
         SelectedItem = null;
         Variables.Clear();
         Counters.Clear();
+        ZoneRandom.Clear();
+        DisabledActions.Clear();
         SolvedZones.Clear();
         VisitedZones.Clear();
         IsGameOver = false;

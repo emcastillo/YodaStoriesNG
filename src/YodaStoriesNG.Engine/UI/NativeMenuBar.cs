@@ -75,6 +75,7 @@ public unsafe class NativeMenuBar : IMenuBar
     private const int ID_CONFIG_KEYBOARD = 3004;
     private const int ID_CONFIG_CONTROLLER = 3005;
     private const int ID_CONFIG_SELECT_DATA = 3006;
+    private const int ID_CONFIG_HIDE_MENU = 3007;
 
     private const int ID_ABOUT_ABOUT = 4001;
     private const int ID_ABOUT_HIGHSCORES = 4002;
@@ -99,6 +100,22 @@ public unsafe class NativeMenuBar : IMenuBar
     public event Action? OnShowKeyboardControls;
     public event Action? OnShowControllerControls;
     public event Action? OnSelectDataFile;
+    public event Action? OnHideMenuBar;
+
+    private bool _visible = true;
+
+    /// <summary>Detaches the OS menu from the window, or puts it back.</summary>
+    public bool Visible
+    {
+        get => _visible;
+        set
+        {
+            _visible = value;
+            if (!OperatingSystem.IsWindows() || _hWnd == IntPtr.Zero) return;
+            SetMenu(_hWnd, value ? _hMenu : IntPtr.Zero);
+            DrawMenuBar(_hWnd);
+        }
+    }
     public event Action? OnShowAbout;
     public event Action? OnShowHighScores;
 
@@ -185,6 +202,8 @@ public unsafe class NativeMenuBar : IMenuBar
         AppendMenuW(configMenu, MF_STRING, (UIntPtr)ID_CONFIG_CONTROLLER, "Controller Controls");
         AppendMenuW(configMenu, MF_SEPARATOR, UIntPtr.Zero, "");
         AppendMenuW(configMenu, MF_STRING, (UIntPtr)ID_CONFIG_SELECT_DATA, "Select Data File...");
+        AppendMenuW(configMenu, MF_SEPARATOR, UIntPtr.Zero, "");
+        AppendMenuW(configMenu, MF_STRING, (UIntPtr)ID_CONFIG_HIDE_MENU, "Hide Menu Bar (F10 shows it)");
         AppendMenuW(_hMenu, MF_POPUP, (UIntPtr)configMenu, "Config");
 
         // About menu
@@ -296,6 +315,9 @@ public unsafe class NativeMenuBar : IMenuBar
             case ID_CONFIG_CONTROLLER:
                 OnShowControllerControls?.Invoke();
                 return true;
+            case ID_CONFIG_HIDE_MENU:
+                OnHideMenuBar?.Invoke();
+                break;
             case ID_CONFIG_SELECT_DATA:
                 OnSelectDataFile?.Invoke();
                 return true;

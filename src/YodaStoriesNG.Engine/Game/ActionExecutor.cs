@@ -13,9 +13,16 @@ public class ActionExecutor
     private readonly Random _random = new();
 
     // Action execution context
-    private int _lastRandomValue;
+    // The zone's own random value: a zone rolls its layout once and checks it for ever after,
+    // so one value shared by every zone let other zones' dice scramble it.
+    private int _lastRandomValue
+    {
+        get => _state.ZoneRandom.GetValueOrDefault(_state.CurrentZoneId);
+        set => _state.ZoneRandom[_state.CurrentZoneId] = value;
+    }
     private Zone? _currentZone;
     private ActionTrigger _currentTrigger;
+    private int _currentActionIndex = -1;
 
     /// <summary>
     /// When true, dialogue instructions are suppressed.
@@ -24,6 +31,8 @@ public class ActionExecutor
 
     // Current interaction context
     public int? PlacedItemId { get; set; }
+    public int PlacedX { get; set; } = -1;   // the tile the item was used on
+    public int PlacedY { get; set; } = -1;
     public int? DroppedItemId { get; set; }
     public int? InteractingNpcId { get; set; }
     public int BumpX { get; set; }
@@ -32,6 +41,13 @@ public class ActionExecutor
     // World data for puzzle conditions (RequiredItemIs, EndingIs, FindItemIs, etc.)
     public WorldMap? CurrentWorld { get; set; }
     public Mission? CurrentMission { get; set; }
+
+    /// <summary>
+    /// The sector holding the current zone or room, when the world came from
+    /// OriginalWorldGenerator. Scripts ask it what this place's puzzle needs and gives;
+    /// worlds without sectors keep the older mission-step answers below.
+    /// </summary>
+    private Sector? CurrentSector => CurrentWorld?.Sectors.GetValueOrDefault(_state.CurrentZoneId);
 
     // Wait instruction support - remaining instructions to resume next tick
     public List<Instruction>? PendingInstructions { get; set; }
@@ -75,10 +91,14 @@ public class ActionExecutor
             }
         }
 
-        foreach (var action in _currentZone.Actions)
+        for (int i = 0; i < _currentZone.Actions.Count; i++)
         {
+            if (_state.DisabledActions.Contains((_currentZone.Id, i)))
+                continue;
+            var action = _currentZone.Actions[i];
             if (EvaluateConditions(action.Conditions, trigger))
             {
+                _currentActionIndex = i;
                 ExecuteInstructions(action.Instructions);
             }
         }
@@ -96,6 +116,14 @@ public class ActionExecutor
 
     private bool EvaluateConditions(List<Condition> conditions, ActionTrigger trigger)
     {
+        // Arriving is its own pass, as in WebFun's JustEntered/Initialize/ByPlane modes: only
+        // actions that ask about arriving run then; the rest wait for the hero's first step.
+        // Otherwise "standing on the landing pad -> clear the shrubs" runs before "landed ->
+        // plant the shrubs", both disable themselves, and Luke is boxed in on Dagobah for good.
+        if (trigger == ActionTrigger.ZoneEnter && !conditions.Any(c =>
+                c.Opcode is ConditionOpcode.ZoneEntered or ConditionOpcode.ZoneNotInitialized or ConditionOpcode.EnterByPlane))
+            return false;
+
         foreach (var condition in conditions)
         {
             if (!EvaluateCondition(condition, trigger))
@@ -132,35 +160,43 @@ public class ActionExecutor
             case ConditionOpcode.ZoneEntered:
                 return trigger == ActionTrigger.ZoneEnter;
 
+            // The tile walked INTO is (x, y) and holds tile arg 2 on some layer (WebFun
+            // conditions/bump.ts). This used to compare the hero's own position, which can
+            // never be a tile that blocks him - so no bump script ever ran.
             case ConditionOpcode.Bump:
-                if (trigger != ActionTrigger.Bump || args.Count < 2)
+                if (trigger != ActionTrigger.Bump || args.Count < 3 || _currentZone == null)
                     return false;
-                return _state.PlayerX == args[0] && _state.PlayerY == args[1];
+                return BumpX == args[0] && BumpY == args[1] &&
+                       (_currentZone.GetTile(args[0], args[1], 0) == args[2] ||
+                        _currentZone.GetTile(args[0], args[1], 1) == args[2] ||
+                        _currentZone.GetTile(args[0], args[1], 2) == args[2]);
 
+            // Hero at (x, y) and the floor tile there is arg 2 (WebFun conditions/standing-on.ts).
             case ConditionOpcode.Standing:
-                if (args.Count < 2)
+                if (args.Count < 3 || _currentZone == null)
                     return false;
-                return _state.PlayerX == args[0] && _state.PlayerY == args[1];
+                return _state.PlayerX == args[0] && _state.PlayerY == args[1] &&
+                       _currentZone.GetTile(args[0], args[1], 0) == args[2];
 
             case ConditionOpcode.CounterIs:
-                if (args.Count < 2)
+                if (args.Count < 1)
                     return false;
-                return _state.GetCounter(args[0]) == args[1];
+                return _state.GetCounter(_state.CurrentZoneId) == args[0];
 
             case ConditionOpcode.CounterIsNot:
-                if (args.Count < 2)
+                if (args.Count < 1)
                     return false;
-                return _state.GetCounter(args[0]) != args[1];
+                return _state.GetCounter(_state.CurrentZoneId) != args[0];
 
             case ConditionOpcode.CounterIsGreaterThan:
-                if (args.Count < 2)
+                if (args.Count < 1)
                     return false;
-                return _state.GetCounter(args[0]) > args[1];
+                return _state.GetCounter(_state.CurrentZoneId) > args[0];
 
             case ConditionOpcode.CounterIsLessThan:
-                if (args.Count < 2)
+                if (args.Count < 1)
                     return false;
-                return _state.GetCounter(args[0]) < args[1];
+                return _state.GetCounter(_state.CurrentZoneId) < args[0];
 
             case ConditionOpcode.RandomIs:
                 if (args.Count < 1)
@@ -185,6 +221,9 @@ public class ActionExecutor
             case ConditionOpcode.HasItem:
                 if (args.Count < 1)
                     return false;
+                // -1 asks about the item this sector's puzzle provides
+                if (args[0] == -1 && CurrentSector is { FindItem: >= 0 } findSector)
+                    return _state.HasItem(findSector.FindItem);
                 return _state.HasItem(args[0]);
 
             // Note the argument order: the tile ID comes FIRST and the position after it,
@@ -214,15 +253,28 @@ public class ActionExecutor
                     return false;
                 return _state.GamesWon == args[0];
 
+            // (x, y, layer, target tile, item): the item was used on (x, y) and that cell
+            // holds the target tile. Item -1 means this sector's required item. WebFun
+            // conditions/placed-item-is.ts, which also rejects negative coordinates.
             case ConditionOpcode.PlacedItemIs:
-                if (args.Count < 1)
+            {
+                if (args.Count < 5 || !PlacedItemId.HasValue || _currentZone == null)
                     return false;
-                return PlacedItemId == args[0];
+                if (args[0] < 0 || args[1] < 0 || args[2] < 0 || args[3] < 0)
+                    return false;
+                int item = args[4] >= 0 ? args[4] : CurrentSector?.RequiredItem ?? -1;
+                return PlacedItemId == item && PlacedX == args[0] && PlacedY == args[1] &&
+                       _currentZone.GetTile(args[0], args[1], args[2]) == args[3];
+            }
 
             case ConditionOpcode.NoItemPlaced:
                 return !PlacedItemId.HasValue;
 
-            case ConditionOpcode.ItemIsPlaced:
+            // 0x12 is WebFun's HasGoalItem: the hero holds the item the whole world is about.
+            // Worlds from the older generator keep the looser "an item was placed" reading.
+            case ConditionOpcode.HasGoalItem:
+                if (CurrentSector != null)
+                    return CurrentWorld?.Mission?.GoalPuzzle is { } goal && _state.HasItem(goal.Item1);
                 return PlacedItemId.HasValue;
 
             case ConditionOpcode.DroppedItemIs:
@@ -255,6 +307,8 @@ public class ActionExecutor
                 // Check if current sector's required item matches arg
                 if (args.Count < 1)
                     return false;
+                if (CurrentSector is { } requiredSector)
+                    return args[0] >= 0 && (args[0] == requiredSector.RequiredItem || args[0] == requiredSector.AdditionalRequiredItem);
                 if (CurrentMission?.CurrentPuzzleStep != null)
                     return CurrentMission.CurrentPuzzleStep.RequiredItemId == args[0];
                 return _state.HasItem(args[0]);  // Fallback
@@ -263,13 +317,16 @@ public class ActionExecutor
                 // Check if zone's find/provided item matches arg
                 if (args.Count < 1)
                     return false;
+                if (CurrentSector is { } findItemSector)
+                    return args[0] >= 0 && args[0] == findItemSector.FindItem;
                 if (CurrentMission?.CurrentPuzzleStep != null)
                     return CurrentMission.CurrentPuzzleStep.RewardItemId == args[0];
                 return _state.HasItem(args[0]);  // Fallback
 
+            // Only during the arrival pass (WebFun EvaluationMode.ByPlane): "have an X-Wing
+            // here" stays true the whole visit and re-ran landing cutscenes every frame.
             case ConditionOpcode.EnterByPlane:
-                // Check if entered zone by X-Wing
-                return _state.XWingPosition.HasValue;
+                return trigger == ActionTrigger.ZoneEnter && _state.XWingPosition.HasValue;
 
             case ConditionOpcode.HeroIsAt:
                 // Check if hero is at position
@@ -316,6 +373,8 @@ public class ActionExecutor
 
             case ConditionOpcode.HasAnyRequiredItem:
                 // Check if inventory contains any of the current sector's required items
+                if (CurrentSector is { } anySector)
+                    return _state.HasItem(anySector.RequiredItem) || _state.HasItem(anySector.AdditionalRequiredItem);
                 if (CurrentWorld?.RequiredItems != null && CurrentWorld.RequiredItems.Count > 0)
                 {
                     return CurrentWorld.RequiredItems.Any(itemId => _state.HasItem(itemId));
@@ -377,17 +436,18 @@ public class ActionExecutor
 
             case InstructionOpcode.RollDice:
                 if (args.Count >= 1)
-                    _lastRandomValue = _random.Next(args[0]);
+                    _lastRandomValue = 1 + _random.Next(Math.Max(1, (int)args[0])); // 1..max, as WebFun roll-dice.ts
                 break;
 
             case InstructionOpcode.SetCounter:
-                if (args.Count >= 2)
-                    _state.SetCounter(args[0], args[1]);
+                // One counter per zone, set to arg 0 (WebFun instructions/set-counter.ts)
+                if (args.Count >= 1)
+                    _state.SetCounter(_state.CurrentZoneId, args[0]);
                 break;
 
             case InstructionOpcode.AddToCounter:
-                if (args.Count >= 2)
-                    _state.AddToCounter(args[0], args[1]);
+                if (args.Count >= 1)
+                    _state.AddToCounter(_state.CurrentZoneId, args[0]);
                 break;
 
             case InstructionOpcode.SetVariable:
@@ -409,8 +469,9 @@ public class ActionExecutor
                 break;
 
             case InstructionOpcode.RemoveItem:
+                // A negative item means this sector's required item
                 if (args.Count >= 1)
-                    _state.RemoveItem(args[0]);
+                    _state.RemoveItem(args[0] < 0 && CurrentSector is { } removeSector ? removeSector.RequiredItem : args[0]);
                 break;
 
             case InstructionOpcode.MarkAsSolved:
@@ -504,12 +565,15 @@ public class ActionExecutor
                 break;  // Caller (ExecuteInstructions) checks for Wait
 
             case InstructionOpcode.DropItem:
-                // Drop an item at specified location
+                // (item, x, y) - item first, like WebFun instructions/drop-item.ts. Item -1
+                // drops this sector's find item.
                 if (args.Count >= 3 && _currentZone != null)
                 {
-                    int x = args[0];
-                    int y = args[1];
-                    int tileId = args[2];
+                    int tileId = args[0] == -1 && CurrentSector is { } dropSector ? dropSector.FindItem : args[0];
+                    int x = args[1];
+                    int y = args[2];
+                    if (tileId < 0)
+                        break;
                     // Place the item tile on layer 1 (object layer)
                     _currentZone.SetTile(x, y, 1, (ushort)tileId);
                     Console.WriteLine($"Dropped item {tileId} at ({x},{y})");
@@ -558,10 +622,12 @@ public class ActionExecutor
                     _currentZone.Type = (ZoneType)args[0];
                 break;
 
+            // Turns off the action that is running, for good (WebFun action.enabled = false).
+            // This used to set a variable nothing read, so every "do this once" script ran
+            // every frame its conditions held - scripts undoing each other included.
             case InstructionOpcode.DisableAction:
-                // This typically disables the current action from running again
-                // Mark with a variable
-                _state.SetVariable(_state.CurrentZoneId + 2000, 1);
+                if (_currentZone != null && _currentActionIndex >= 0)
+                    _state.DisabledActions.Add((_currentZone.Id, _currentActionIndex));
                 break;
 
             case InstructionOpcode.Redraw:

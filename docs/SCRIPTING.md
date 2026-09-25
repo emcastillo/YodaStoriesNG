@@ -234,6 +234,57 @@ IF   RandomIsGreaterThan 1  THEN EnableMonster 0
 
 ---
 
+## Indiana Jones' opcode numbers
+
+Indiana Jones uses the same script language with **different opcode numbers** - the same
+ideas, shuffled, a handful missing. WebFun's own documentation leaves this as a TODO
+("Check if Indy uses the same opcodes"), and this engine used to run every Indy script
+through Yoda's table: rescuing Chico ran `LoseGame`, every line of dialogue ran `AddItem`.
+
+The table below was decoded from Indiana Jones' 2,825 scripts: first each opcode's argument
+shapes (which slots hold tile ids, coordinates, small numbers or nothing), then what it does
+in context. For example, the bartender's lines branch on `RandomIs` after a `RollDice`; a
+temple has twenty "if monster *n* is dead, add 1" actions feeding a `CounterIs` that makes
+Indy complain about snakes; handing Marcus an artefact runs `PlaySound 14`, `RemoveItem`,
+`SpeakNpc`. The parser rewrites Indy opcodes into Yoda's numbering
+(`DtaParser.IndyConditions` / `IndyInstructions`), so everything after it - the executor,
+the script editor - has one table.
+
+| Indy | Condition | | Indy | Instruction |
+|---|---|---|---|---|
+| `0x01` | `StandingOn` | | `0x00` | `PlaceTile` |
+| `0x02` | `Bump` | | `0x01` | `MoveTile` |
+| `0x03` | `PlacedItemIs` | | `0x02` | `RemoveTile` |
+| `0x04` | `ZoneNotInitialized` | | `0x03` | `EnableMonster` |
+| `0x05` | `ZoneEntered` | | `0x04` | `DisableMonster` |
+| `0x06` | `CounterIs` | | `0x05` | `SpeakHero` |
+| `0x09` | `HasGoalItem` | | `0x06` | `Redraw` |
+| `0x0A` | `HasItem` | | `0x09` | `SetCounter` |
+| `0x0C` | `RandomIsGreaterThan` | | `0x0A` | `AddToCounter` |
+| `0x0D` | `RandomIs` | | `0x0B` | `PlaySound` |
+| `0x0E` | `RandomIsLessThan` | | `0x0C` | `Wait` |
+| `0x0F` | has this sector's find item (`HasItem -1`) | | `0x0D` | `RollDice` |
+| `0x10` | `EnterByPlane` (arrived by vehicle) | | `0x0E` / `0x0F` | `HideHero` / `ShowHero` |
+| `0x11` | `MonsterIsDead` | | `0x10` | `DrawTile` |
+| `0x12` | `HasNoActiveMonsters` | | `0x11` | `SetTileNeedsDisplay` |
+| `0x13` | `TileAtIs` | | `0x12` | `MoveHeroTo` |
+| `0x14` | `RequiredItemIs` | | `0x13` | `SetRectNeedsDisplay` |
+| `0x15` | `EndingIs` | | `0x15` | `DisableAction` |
+| `0x16` | `HealthIsLessThan` | | `0x16` / `0x17` | `EnableHotspot` / `DisableHotspot` |
+| | | | `0x18` / `0x19` | `EnableAllMonsters` / `DisableAllMonsters` |
+| | | | `0x1A` | `MoveHeroBy` |
+| | | | `0x1B` | `WinGame` - fires as you take the artefact |
+| | | | `0x1C` | `SpeakNpc` |
+| | | | `0x1D` | `AddItem` |
+| | | | `0x1E` | `DropItem` |
+| | | | `0x1F` | `LoseGame` - the alien abduction |
+| | | | `0x20` | `RemoveItem` |
+| | | | `0x21` | `MarkAsSolved` |
+| | | | `0x22` | `ChangeZone` |
+
+Least certain: `0x09` (only ever gates handing Marcus the artefact) and `0x10`. Not yet
+decoded: instructions `0x14` (4 uses) and `0x23` (15); they parse to `0xFF` and do nothing.
+
 ## Known divergences from the original
 
 Honest accounting of where this engine does not match
@@ -246,6 +297,22 @@ the format has.
   currently evaluated as NPC-interaction checks rather than sector-counter comparisons. Real
   scripts use them as sector-counter checks. This is the largest remaining scripting
   divergence and is on the [roadmap](ROADMAP.md).
+- **Several executor bugs fixed while getting Indiana Jones to play, all affecting both
+  games.** Each made scripts misfire quietly:
+  - `DisableAction` set a variable nothing read, so every "do this once" action re-ran every
+    frame its conditions held. It now turns that action off for the rest of the game.
+  - `Bump` compared the hero's own position, which can never be the blocked tile he walked
+    into, so no bump script ever ran. It now checks the bumped square and its tile.
+  - `StandingOn` ignored the floor tile it names; it now checks it.
+  - `RollDice` gave `0..n-1`; scripts expect `1..n` (a roll of 0 matched no variant).
+  - The random value was one global; it is per zone, since a zone rolls its layout once and
+    checks it later.
+  - Zone entry ran every action; now only actions that ask about arriving (`ZoneEntered`,
+    `ZoneNotInitialized`, `EnterByPlane`) run then, and `EnterByPlane` is only true on arrival,
+    as in WebFun's evaluation modes. Dagobah's landing sequence depends on the order.
+- **Counters were keyed wrong too, and now are not.** `CounterIs`, `SetCounter` and
+  `AddToCounter` used to take a counter id and a value; the original keeps one counter per
+  zone and every counter opcode takes a single argument. Fixed for both games.
 - **Sector-counter opcodes take a key plus a value** in this engine
   (`variable[arg0 + 3000] op arg1`), where the original has one counter per zone compared
   against `arg0`.

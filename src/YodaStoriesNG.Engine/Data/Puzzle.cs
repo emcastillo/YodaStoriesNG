@@ -10,7 +10,7 @@ public class Puzzle
 
     // Items involved in this puzzle
     public ushort Item1 { get; set; }
-    public ushort Item2 { get; set; }
+    public ushort? Item2 { get; set; }   // Yoda only, and only some puzzles
 
     // Text strings for the puzzle
     public List<string> Strings { get; set; } = new();
@@ -19,12 +19,13 @@ public class Puzzle
     public byte[] RawData { get; set; } = Array.Empty<byte>();
 }
 
-public enum PuzzleType : short
+/// <summary>The puzzle type as stored in the file (WebFun objects/puzzle-type.ts).</summary>
+public enum PuzzleType
 {
-    None = -1,
-    Quest = 0,
-    Transport = 1,
-    Trade = 2,
-    Use = 3,
-    Goal = 4,
+    None = -1,         // disabled
+    Transaction = 0,   // an NPC trades one item for another; placed in Trade zones
+    Offer = 1,         // placed in Use zones
+    Goal = 2,          // the puzzles just before the end
+    Mission = 3,       // the end puzzle: what the whole world is built around
+    Unknown = 4,
 }

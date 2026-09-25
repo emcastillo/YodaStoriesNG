@@ -67,6 +67,13 @@ public class DtaParser
                 break;
             }
 
+            // Yoda Stories' ZONE has no length prefix; the section reads its own framing.
+            if (tag == "ZONE")
+            {
+                ParseZonesSection();
+                continue;
+            }
+
             // All other sections have a 4-byte length prefix
             if (_reader.BaseStream.Position + 4 > _reader.BaseStream.Length)
                 break;
@@ -74,6 +81,12 @@ public class DtaParser
             var length = _reader.ReadUInt32();
             ParseSection(tag, length);
         }
+
+        var zones = _data.Zones;
+        Console.WriteLine($"Zone contents: {zones.Sum(z => z.Objects.Count)} hotspots, " +
+                          $"{zones.Sum(z => z.Monsters.Count)} monsters, {zones.Sum(z => z.Actions.Count)} actions, " +
+                          $"{zones.Count(z => z.Name != null)} named; types " +
+                          string.Join(" ", zones.GroupBy(z => z.Type).OrderBy(g => g.Key).Select(g => $"{g.Key}={g.Count()}")));
 
         return _data;
     }
@@ -101,8 +114,15 @@ public class DtaParser
             case "TILE":
                 ParseTilesSection(length);
                 break;
-            case "ZONE":
-                ParseZonesSection();
+            case "ZAUX":
+            case "ZAX2":
+            case "ZAX3":
+            case "ZAX4":
+            case "HTSP":
+            case "ACTN":
+            case "ZNAM":
+                ParseIndyZoneSection(tag);
+                _reader.BaseStream.Seek(startPos + length, SeekOrigin.Begin);
                 break;
             case "PUZ2":
                 ParsePuzzlesSection(length);
@@ -210,356 +230,213 @@ public class DtaParser
         Console.WriteLine($"Loaded {_data.Tiles.Count} tiles");
     }
 
+    /// <summary>
+    /// ZONE, per WebFun file-format/categories/zone.ts - verified against every zone of both
+    /// retail files. Yoda Stories keeps everything about a zone in one record. Indiana Jones
+    /// keeps only the tiles here and puts monsters, items, hotspots and scripts in the
+    /// ZAUX, ZAX2-4, HTSP and ACTN sections that follow, one entry per zone in zone order.
+    ///
+    ///   Yoda:  uint16 count; per zone: uint16 planet, uint32 size, uint16 index, IZON,
+    ///          hotspots, IZAX, IZX2, IZX3, IZX4, actions
+    ///   Indy:  uint32 size, uint16 count; per zone: IZON
+    ///
+    /// The section has no length prefix in Yoda Stories, so the main loop hands over
+    /// before reading one.
+    /// </summary>
     private void ParseZonesSection()
     {
-        // Zone count is 2 bytes (not accurate, just skip it)
-        _reader.ReadUInt16();
-        _reader.ReadUInt16(); // padding
+        bool indy = _data.GameType == GameType.IndianaJones;
+        if (indy)
+            _reader.ReadUInt32();
 
-        int zonesLoaded = 0;
-        int zoneId = 0;
-
-        // Parse zones by scanning for IZON markers
-        while (_reader.BaseStream.Position + 4 < _reader.BaseStream.Length)
+        int count = _reader.ReadUInt16();
+        for (int id = 0; id < count; id++)
         {
-            var markerPos = _reader.BaseStream.Position;
+            if (indy)
+            {
+                _data.Zones.Add(ParseIzon(id, Planet.None));
+                continue;
+            }
 
-            // Check for IZON marker
-            var marker = System.Text.Encoding.ASCII.GetString(_reader.ReadBytes(4));
+            var planet = (Planet)_reader.ReadUInt16();
+            var size = _reader.ReadUInt32();
+            var end = _reader.BaseStream.Position + size;
+            _reader.ReadUInt16(); // zone index, always equal to id
 
-            if (marker == "IZON")
-            {
-                try
-                {
-                    var zone = ParseIZONZone(zoneId, markerPos);
-                    _data.Zones.Add(zone);
-                    if (zone.Width > 0)
-                        zonesLoaded++;
-                    zoneId++;
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Error parsing zone {zoneId}: {ex.Message}");
-                    _data.Zones.Add(new Zone { Id = zoneId, Width = 0, Height = 0 });
-                    zoneId++;
-                }
-            }
-            else if (marker == "PUZ2" || marker == "CHAR" || marker == "CHWP" ||
-                     marker == "CAUX" || marker == "TNAM" || marker == "ENDF")
-            {
-                // Hit another section - we're done with zones
-                _reader.BaseStream.Seek(markerPos, SeekOrigin.Begin);
-                break;
-            }
-            else
-            {
-                // Unknown data, try to find next IZON or section marker
-                _reader.BaseStream.Seek(markerPos + 1, SeekOrigin.Begin);
-            }
+            var zone = ParseIzon(id, planet);
+            zone.Objects = ReadHotspots(_reader.ReadUInt16());
+            ReadIzax(zone);
+            ReadIzx2(zone);
+            ReadIzx3(zone);
+            ReadIzx4();
+            zone.Actions = ReadActions(_reader.ReadUInt16());
+
+            _reader.BaseStream.Seek(end, SeekOrigin.Begin);
+            _data.Zones.Add(zone);
         }
 
-        Console.WriteLine($"Loaded {zonesLoaded} valid zones");
-    }
-
-    private Zone ParseIZONZone(int zoneId, long izonPos)
-    {
-        var zone = new Zone { Id = zoneId };
-
-        // IZON format (marker already read):
-        // 4 bytes: size info
-        // 2 bytes: width
-        // 2 bytes: height
-        // 1 byte: type/flags
-        // 5 bytes: padding
-        // 1 byte: planet
-        // 1 byte: unused
-        // Then tile data...
-
-        var sizeInfo = _reader.ReadUInt32();
-        zone.Width = _reader.ReadUInt16();
-        zone.Height = _reader.ReadUInt16();
-        zone.Flags = (ZoneFlags)_reader.ReadByte();
-        _reader.ReadBytes(5); // padding
-        zone.Planet = (Planet)_reader.ReadByte();
-        _reader.ReadByte(); // unused
-
-        // Sanity check dimensions
-        if (zone.Width == 0 || zone.Height == 0 || zone.Width > 18 || zone.Height > 18)
-        {
-            return zone;
-        }
-
-        // Read tile grid (3 layers per cell, 2 bytes per tile ID)
-        zone.TileGrid = new ushort[zone.Height, zone.Width, 3];
-        for (int y = 0; y < zone.Height; y++)
-        {
-            for (int x = 0; x < zone.Width; x++)
-            {
-                zone.TileGrid[y, x, 0] = _reader.ReadUInt16();
-                zone.TileGrid[y, x, 1] = _reader.ReadUInt16();
-                zone.TileGrid[y, x, 2] = _reader.ReadUInt16();
-            }
-        }
-
-        // Read object count and objects
-        var objectCount = _reader.ReadUInt16();
-
-        for (int j = 0; j < objectCount; j++)
-        {
-            // Object format: Type(2), pad(2), X(2), Y(2), pad(2), Argument(2) = 12 bytes
-            var objType = (ZoneObjectType)_reader.ReadUInt16();
-            _reader.ReadUInt16(); // padding
-            var objX = _reader.ReadUInt16();
-            var objY = _reader.ReadUInt16();
-            _reader.ReadUInt16(); // padding
-            var objArg = _reader.ReadUInt16();
-
-            var obj = new ZoneObject
-            {
-                Type = objType,
-                X = objX,
-                Y = objY,
-                Argument = objArg
-            };
-            zone.Objects.Add(obj);
-        }
-
-        // Parse auxiliary sections
-        while (_reader.BaseStream.Position + 4 < _reader.BaseStream.Length)
-        {
-            var auxPos = _reader.BaseStream.Position;
-            var auxTag = System.Text.Encoding.ASCII.GetString(_reader.ReadBytes(4));
-
-            switch (auxTag)
-            {
-                case "IZAX":
-                    var izaxLen = _reader.ReadUInt16();
-                    var izaxData = _reader.ReadBytes(Math.Max(0, izaxLen - 6));
-                    zone.AuxData = ParseIZAXData(izaxData);
-                    break;
-                case "IZX2":
-                    var izx2Len = _reader.ReadUInt16();
-                    var izx2Data = _reader.ReadBytes(Math.Max(0, izx2Len - 6));
-                    zone.Aux2Data = new ZoneAux2Data { RawData = izx2Data };
-                    break;
-                case "IZX3":
-                    var izx3Len = _reader.ReadUInt16();
-                    zone.Aux3Data = new ZoneAux3Data { RawData = _reader.ReadBytes(Math.Max(0, izx3Len - 6)) };
-                    break;
-                case "IZX4":
-                    zone.Aux4Data = new ZoneAux4Data { RawData = _reader.ReadBytes(8) };
-                    break;
-                case "IACT":
-                    zone.Actions.Add(ParseAction(_reader));
-                    break;
-                default:
-                    // Not a zone subsection - go back and return
-                    _reader.BaseStream.Seek(auxPos, SeekOrigin.Begin);
-                    return zone;
-            }
-        }
-
-        return zone;
+        Console.WriteLine($"Loaded {count} zones");
     }
 
     /// <summary>
-    private Zone ParseZoneData(int zoneId, byte[] zoneData)
-    {
-        var zone = new Zone { Id = zoneId };
-
-        if (zoneData.Length < 22)
-            return zone;
-
-        using var ms = new MemoryStream(zoneData);
-        using var reader = new BinaryReader(ms);
-
-        // Zone data format:
-        // Bytes 0-1: Zone ID (from file)
-        // Bytes 2-5: "IZON" marker
-        // Bytes 6-9: Size/unknown
-        // Bytes 10-11: Width
-        // Bytes 12-13: Height
-        // Byte 14: Zone type/flags
-        // Bytes 15-19: Padding
-        // Byte 20: Planet
-        // Byte 21: Unused
-        // Bytes 22+: Tile data
-
-        var fileZoneId = reader.ReadUInt16();
-        var izonTag = System.Text.Encoding.ASCII.GetString(reader.ReadBytes(4));
-
-        if (izonTag != "IZON")
-            return zone;
-
-        var sizeInfo = reader.ReadUInt32();
-        zone.Width = reader.ReadUInt16();
-        zone.Height = reader.ReadUInt16();
-        zone.Flags = (ZoneFlags)reader.ReadByte();
-        reader.ReadBytes(5); // padding
-        zone.Planet = (Planet)reader.ReadByte();
-        reader.ReadByte(); // unused
-
-        // Sanity check dimensions
-        if (zone.Width == 0 || zone.Height == 0 || zone.Width > 18 || zone.Height > 18)
-        {
-            return zone;
-        }
-
-        // Read tile grid (3 layers per cell, 2 bytes per tile ID)
-        zone.TileGrid = new ushort[zone.Height, zone.Width, 3];
-        for (int y = 0; y < zone.Height; y++)
-        {
-            for (int x = 0; x < zone.Width; x++)
-            {
-                zone.TileGrid[y, x, 0] = reader.ReadUInt16(); // Background
-                zone.TileGrid[y, x, 1] = reader.ReadUInt16(); // Middle
-                zone.TileGrid[y, x, 2] = reader.ReadUInt16(); // Foreground
-            }
-        }
-
-        // Read object count and objects (hotspots)
-        if (ms.Position + 2 <= ms.Length)
-        {
-            var objectCount = reader.ReadUInt16();
-            for (int j = 0; j < objectCount && ms.Position + 12 <= ms.Length; j++)
-            {
-                zone.Objects.Add(ParseZoneObjectFromReader(reader));
-            }
-        }
-
-        // Parse auxiliary sections by looking for known tags
-        while (ms.Position + 4 <= ms.Length)
-        {
-            var auxTag = System.Text.Encoding.ASCII.GetString(reader.ReadBytes(4));
-
-            switch (auxTag)
-            {
-                case "IZAX":
-                    zone.AuxData = ParseIZAXFromReader(reader);
-                    break;
-                case "IZX2":
-                    zone.Aux2Data = ParseIZX2FromReader(reader);
-                    break;
-                case "IZX3":
-                    zone.Aux3Data = ParseIZX3FromReader(reader);
-                    break;
-                case "IZX4":
-                    zone.Aux4Data = ParseIZX4FromReader(reader);
-                    break;
-                case "IACT":
-                    zone.Actions.Add(ParseAction(reader));
-                    break;
-                default:
-                    // Unknown tag or end of zone - stop parsing
-                    return zone;
-            }
-        }
-
-        return zone;
-    }
-
-    private ZoneObject ParseZoneObjectFromReader(BinaryReader reader)
-    {
-        var type = (ZoneObjectType)reader.ReadUInt16();
-        reader.ReadUInt16(); // padding
-        var x = reader.ReadUInt16();
-        var y = reader.ReadUInt16();
-        reader.ReadUInt16(); // padding
-        var argument = reader.ReadUInt16();
-
-        return new ZoneObject
-        {
-            Type = type,
-            X = x,
-            Y = y,
-            Argument = argument
-        };
-    }
-
-    private ZoneAuxData ParseIZAXFromReader(BinaryReader reader)
-    {
-        var length = reader.ReadUInt16();
-        var dataLength = Math.Max(0, length - 6);
-        var data = reader.ReadBytes(dataLength);
-        return ParseIZAXData(data);
-    }
-
-    /// <summary>
-    /// Parses IZAX entity data from raw bytes.
-    /// IZAX format: 4 bytes header, 2 bytes count, then for each entity: charId(2), x(2), y(2), itemTile(2), itemQty(2), data(6)
+    /// IZON: uint32 size, uint16 width, uint16 height, uint32 type, (Yoda: uint16 sector
+    /// counter, uint16 planet), then width*height cells of three uint16 tiles each.
     /// </summary>
-    private ZoneAuxData ParseIZAXData(byte[] data)
+    private Zone ParseIzon(int id, Planet planet)
     {
-        var auxData = new ZoneAuxData { RawData = data };
-
-        // Parse entity data from raw bytes
-        // IZAX has a 4-byte header before the entity count
-        if (data.Length >= 6)
+        Expect("IZON");
+        _reader.ReadUInt32();
+        var zone = new Zone
         {
-            using var ms = new MemoryStream(data);
-            using var entityReader = new BinaryReader(ms);
+            Id = id,
+            Planet = planet,
+            Width = _reader.ReadUInt16(),
+            Height = _reader.ReadUInt16(),
+            Type = (ZoneType)_reader.ReadUInt32(),
+        };
 
-            try
+        if (_data.GameType != GameType.IndianaJones)
+            _reader.ReadBytes(4); // sector counter, planet again
+
+        zone.TileGrid = new ushort[zone.Height, zone.Width, 3];
+        for (int y = 0; y < zone.Height; y++)
+            for (int x = 0; x < zone.Width; x++)
+                for (int layer = 0; layer < 3; layer++)
+                    zone.TileGrid[y, x, layer] = _reader.ReadUInt16();
+
+        return zone;
+    }
+
+    /// <summary>Hotspot: uint32 type, int16 x, int16 y, uint16 enabled, int16 argument.</summary>
+    private List<ZoneObject> ReadHotspots(int count)
+    {
+        var hotspots = new List<ZoneObject>(count);
+        for (int i = 0; i < count; i++)
+        {
+            var type = (ZoneObjectType)_reader.ReadUInt32();
+            var x = _reader.ReadInt16();
+            var y = _reader.ReadInt16();
+            _reader.ReadUInt16(); // enabled
+            var argument = _reader.ReadUInt16();
+            hotspots.Add(new ZoneObject
             {
-                // Skip 4-byte header
-                entityReader.ReadUInt32();
-                var entityCount = entityReader.ReadUInt16();
+                Type = type, X = x, Y = y, Argument = argument, FileArgument = argument,
+                Enabled = ZoneObject.EnabledByDefault(type),
+            });
+        }
+        return hotspots;
+    }
 
-                // Each entity is 16 bytes: charId(2) + x(2) + y(2) + itemTile(2) + itemQty(2) + data(6)
-                for (int i = 0; i < entityCount && ms.Position + 16 <= ms.Length; i++)
-                {
-                    var charId = entityReader.ReadUInt16();
+    /// <summary>
+    /// IZAX: uint32 size, uint16 unknown, monsters, required items, and in Yoda goal items.
+    /// A Yoda monster is 44 bytes (character, x, y, loot, drops-loot, eight waypoints); an
+    /// Indiana Jones one is just character, x, y.
+    /// </summary>
+    private void ReadIzax(Zone zone)
+    {
+        bool yoda = _data.GameType != GameType.IndianaJones;
+        Expect("IZAX");
+        _reader.ReadUInt32();
+        _reader.ReadUInt16();
 
-                    // Skip invalid entries (0xFFFF means empty slot)
-                    if (charId == 0xFFFF)
-                    {
-                        entityReader.ReadBytes(14); // Skip rest of entry
-                        continue;
-                    }
-
-                    var entity = new IZAXEntity
-                    {
-                        CharacterId = charId,
-                        X = entityReader.ReadUInt16(),
-                        Y = entityReader.ReadUInt16(),
-                        ItemTileId = entityReader.ReadUInt16(),
-                        ItemQuantity = entityReader.ReadUInt16(),
-                        Data = entityReader.ReadBytes(6)
-                    };
-
-                    auxData.Entities.Add(entity);
-                }
-            }
-            catch
+        int monsters = _reader.ReadUInt16();
+        for (int i = 0; i < monsters; i++)
+        {
+            var monster = new ZoneMonster
             {
-                // Parsing failed - keep raw data, but entities list will be empty/partial
+                CharacterId = _reader.ReadUInt16(),
+                X = _reader.ReadUInt16(),
+                Y = _reader.ReadUInt16(),
+            };
+            if (yoda)
+            {
+                monster.Loot = _reader.ReadInt16();
+                monster.DropsLoot = _reader.ReadUInt32() != 0;
+                monster.Waypoints = Enumerable.Range(0, 8).Select(_ => _reader.ReadInt32()).ToArray();
             }
+            zone.Monsters.Add(monster);
         }
 
-        return auxData;
+        zone.RequiredItems = ReadIds();
+        if (yoda)
+            zone.GoalItems = ReadIds();
     }
 
-    private ZoneAux2Data ParseIZX2FromReader(BinaryReader reader)
+    private void ReadIzx2(Zone zone)
     {
-        var length = reader.ReadUInt16();
-        var dataLength = Math.Max(0, length - 6);
-        var data = reader.ReadBytes(dataLength);
-        return new ZoneAux2Data { RawData = data };
+        Expect("IZX2");
+        _reader.ReadUInt32();
+        zone.ProvidedItems = ReadIds();
     }
 
-    private ZoneAux3Data ParseIZX3FromReader(BinaryReader reader)
+    private void ReadIzx3(Zone zone)
     {
-        var length = reader.ReadUInt16();
-        var dataLength = Math.Max(0, length - 6);
-        var data = reader.ReadBytes(dataLength);
-        return new ZoneAux3Data { RawData = data };
+        Expect("IZX3");
+        _reader.ReadUInt32();
+        zone.Npcs = ReadIds();
     }
 
-    private ZoneAux4Data ParseIZX4FromReader(BinaryReader reader)
+    private void ReadIzx4()
     {
-        // IZX4 has fixed 8-byte data
-        var data = reader.ReadBytes(8);
-        return new ZoneAux4Data { RawData = data };
+        Expect("IZX4");
+        _reader.ReadUInt32();
+        _reader.ReadUInt16(); // unknown
+    }
+
+    private List<Data.Action> ReadActions(int count)
+    {
+        var actions = new List<Data.Action>(count);
+        for (int i = 0; i < count; i++)
+        {
+            Expect("IACT");
+            actions.Add(ParseAction(_reader));
+        }
+        return actions;
+    }
+
+    /// <summary>A uint16 count followed by that many uint16 tile IDs.</summary>
+    private List<ushort> ReadIds()
+    {
+        int count = _reader.ReadUInt16();
+        var ids = new List<ushort>(count);
+        for (int i = 0; i < count; i++)
+            ids.Add(_reader.ReadUInt16());
+        return ids;
+    }
+
+    /// <summary>
+    /// Indiana Jones' per-zone sections. ZAUX..ZAX4 hold one record per zone in zone order;
+    /// HTSP, ACTN and ZNAM are lists keyed by an int16 zone id, ended by -1.
+    /// </summary>
+    private void ParseIndyZoneSection(string tag)
+    {
+        switch (tag)
+        {
+            case "ZAUX": foreach (var zone in _data.Zones) ReadIzax(zone); break;
+            case "ZAX2": foreach (var zone in _data.Zones) ReadIzx2(zone); break;
+            case "ZAX3": foreach (var zone in _data.Zones) ReadIzx3(zone); break;
+            case "ZAX4": foreach (var _ in _data.Zones) ReadIzx4(); break;
+            default:
+                for (int id = _reader.ReadInt16(); id != -1; id = _reader.ReadInt16())
+                {
+                    var zone = _data.Zones[id];
+                    if (tag == "HTSP")
+                        zone.Objects = ReadHotspots(_reader.ReadUInt16());
+                    else if (tag == "ACTN")
+                        zone.Actions = ReadActions(_reader.ReadUInt16());
+                    else
+                        zone.Name = System.Text.Encoding.Latin1.GetString(_reader.ReadBytes(16)).Split('\0')[0];
+                }
+                break;
+        }
+    }
+
+    private void Expect(string marker)
+    {
+        var at = _reader.BaseStream.Position;
+        var found = System.Text.Encoding.ASCII.GetString(_reader.ReadBytes(4));
+        if (found != marker)
+            throw new InvalidDataException($"Expected {marker} at 0x{at:X}, found \"{found}\"");
     }
 
     /// <summary>
@@ -584,11 +461,93 @@ public class DtaParser
     /// following section headers. Opcode argument indices in ActionExecutor and
     /// ScriptEditorWindow are written against the layout above.
     /// </summary>
+    /// <summary>
+    /// Indiana Jones numbers its script opcodes differently from Yoda Stories - same ideas,
+    /// shuffled order, a few missing. WebFun's own docs leave this as a TODO. Decoded from the
+    /// scripts themselves: each opcode's argument shapes, then what it does in context (the
+    /// bartender's dialogue branches on RandomIs after RollDice; twenty "monster n is dead ->
+    /// add 1" actions feed a CounterIs that makes Indy complain about snakes; delivering an
+    /// artefact runs PlaySound 14, RemoveItem, SpeakNpc). Parsed Indy scripts are rewritten
+    /// into Yoda's numbering, so everything downstream - the executor, the script editor -
+    /// has one opcode table. See docs/SCRIPTING.md.
+    /// </summary>
+    private static readonly Dictionary<int, int> IndyConditions = new()
+    {
+        [0x01] = (int)ConditionOpcode.StandingOn,
+        [0x02] = (int)ConditionOpcode.Bump,
+        [0x03] = (int)ConditionOpcode.PlacedItemIs,
+        [0x04] = (int)ConditionOpcode.ZoneNotInitialized,
+        [0x05] = (int)ConditionOpcode.ZoneEntered,
+        [0x06] = (int)ConditionOpcode.CounterIs,
+        [0x09] = (int)ConditionOpcode.HasGoalItem,         // gate on handing Marcus the artefact
+        [0x0a] = (int)ConditionOpcode.HasItem,
+        [0x0c] = (int)ConditionOpcode.RandomIsGreaterThan,
+        [0x0d] = (int)ConditionOpcode.RandomIs,
+        [0x0e] = (int)ConditionOpcode.RandomIsLessThan,
+        [0x0f] = IndyHasFindItem,                           // picked up this sector's item
+        [0x10] = (int)ConditionOpcode.EnterByPlane,        // arrived by vehicle or tunnel
+        [0x11] = (int)ConditionOpcode.MonsterIsDead,
+        [0x12] = (int)ConditionOpcode.HasNoActiveMonsters,
+        [0x13] = (int)ConditionOpcode.TileAtIs,
+        [0x14] = (int)ConditionOpcode.RequiredItemIs,
+        [0x15] = (int)ConditionOpcode.EndingIs,
+        [0x16] = (int)ConditionOpcode.HealthIsLessThan,
+    };
+
+    private static readonly Dictionary<int, int> IndyInstructions = new()
+    {
+        [0x00] = (int)InstructionOpcode.PlaceTile,
+        [0x01] = (int)InstructionOpcode.MoveTile,
+        [0x02] = (int)InstructionOpcode.RemoveTile,
+        [0x03] = (int)InstructionOpcode.EnableMonster,
+        [0x04] = (int)InstructionOpcode.DisableMonster,
+        [0x05] = (int)InstructionOpcode.SpeakHero,
+        [0x06] = (int)InstructionOpcode.Redraw,
+        [0x09] = (int)InstructionOpcode.SetCounter,
+        [0x0a] = (int)InstructionOpcode.AddToCounter,
+        [0x0b] = (int)InstructionOpcode.PlaySound,
+        [0x0c] = (int)InstructionOpcode.Wait,
+        [0x0d] = (int)InstructionOpcode.RollDice,
+        [0x0e] = (int)InstructionOpcode.HideHero,
+        [0x0f] = (int)InstructionOpcode.ShowHero,
+        [0x10] = (int)InstructionOpcode.DrawTile,
+        [0x11] = (int)InstructionOpcode.SetTileNeedsDisplay,
+        [0x12] = (int)InstructionOpcode.MoveHeroTo,
+        [0x13] = (int)InstructionOpcode.SetRectNeedsDisplay,
+        [0x15] = (int)InstructionOpcode.DisableAction,
+        [0x16] = (int)InstructionOpcode.EnableHotspot,
+        [0x17] = (int)InstructionOpcode.DisableHotspot,
+        [0x18] = (int)InstructionOpcode.EnableAllMonsters,
+        [0x19] = (int)InstructionOpcode.DisableAllMonsters,
+        [0x1a] = (int)InstructionOpcode.MoveHeroBy,
+        [0x1b] = (int)InstructionOpcode.WinGame,              // right after taking the artefact
+        [0x1c] = (int)InstructionOpcode.SpeakNpc,
+        [0x1d] = (int)InstructionOpcode.AddItem,
+        [0x1e] = (int)InstructionOpcode.DropItem,
+        [0x1f] = (int)InstructionOpcode.LoseGame,             // the alien abduction
+        [0x20] = (int)InstructionOpcode.RemoveItem,
+        [0x21] = (int)InstructionOpcode.MarkAsSolved,
+        [0x22] = (int)InstructionOpcode.ChangeZone,
+    };
+
+    /// <summary>Indy 0x0f has no Yoda twin; it becomes HasItem with -1, "this sector's find item".</summary>
+    private const int IndyHasFindItem = -2;
+
+    /// <summary>Opcodes not yet decoded (conditions 0x07/0x08, instructions 0x14/0x23) - kept visible, not guessed.</summary>
+    private const int IndyUnknown = 0xFF;
+
+    private Dictionary<int, int>? _indyConditions => _data.GameType == GameType.IndianaJones ? IndyConditions : null;
+    private Dictionary<int, int>? _indyInstructions => _data.GameType == GameType.IndianaJones ? IndyInstructions : null;
+
+    private static int MapIndy(Dictionary<int, int> table, int opcode) =>
+        table.TryGetValue(opcode, out var mapped) ? (mapped == IndyHasFindItem ? (int)ConditionOpcode.HasItem : mapped) : IndyUnknown;
+
     private Data.Action ParseAction(BinaryReader reader)
     {
         var action = new Data.Action();
         var length = reader.ReadUInt32();
-        var endPos = reader.BaseStream.Position + length;
+        // Indiana Jones writes 0 here for every block; the counts are the real framing there.
+        var endPos = length == 0 ? reader.BaseStream.Length : reader.BaseStream.Position + length;
 
         try
         {
@@ -596,9 +555,11 @@ public class DtaParser
             for (int i = 0; i < conditionCount && reader.BaseStream.Position < endPos; i++)
             {
                 var (opcode, args, text) = ReadActionItem(reader);
+                if (_indyConditions != null && opcode == 0x0f && args.Count > 0)
+                    args[0] = -1; // IndyHasFindItem: HasItem(-1), this sector's find item
                 action.Conditions.Add(new Condition
                 {
-                    Opcode = (ConditionOpcode)opcode,
+                    Opcode = (ConditionOpcode)(_indyConditions != null ? MapIndy(_indyConditions, opcode) : opcode),
                     Arguments = args,
                     Text = text
                 });
@@ -612,7 +573,7 @@ public class DtaParser
                     var (opcode, args, text) = ReadActionItem(reader);
                     action.Instructions.Add(new Instruction
                     {
-                        Opcode = (InstructionOpcode)opcode,
+                        Opcode = (InstructionOpcode)(_indyInstructions != null ? MapIndy(_indyInstructions, opcode) : opcode),
                         Arguments = args,
                         Text = text
                     });
@@ -625,7 +586,7 @@ public class DtaParser
         }
 
         // Resync to the block boundary whether or not the body parsed cleanly.
-        if (reader.BaseStream.Position != endPos && endPos <= reader.BaseStream.Length)
+        if (length != 0 && reader.BaseStream.Position != endPos && endPos <= reader.BaseStream.Length)
             reader.BaseStream.Seek(endPos, SeekOrigin.Begin);
 
         return action;
@@ -651,77 +612,55 @@ public class DtaParser
         return (opcode, arguments, text);
     }
 
+    /// <summary>
+    /// PUZ2: a list of int16 index (-1 ends it), "IPUZ", uint32 size, then
+    ///
+    ///   Yoda:  uint32 type, uint32 item1 class, uint32 item2 class, uint16 unknown,
+    ///          5 x (uint16 length, text), uint16 item1, uint16 item2
+    ///   Indy:  uint32 type, uint32 item1 class,                     uint16 unknown,
+    ///          5 x (uint16 length, text), uint16 item1
+    ///
+    /// WebFun and its Kaitai spec read Indiana Jones' first field as an item class and
+    /// give every Indy puzzle no type. It is the type: it matches the suffix of every
+    /// puzzle's PNAM name without exception (TX 0, KL 1, GW 2, GO 3 - Transaction,
+    /// Offer, Goal, Mission), and the 15 GO puzzles pair with Indy's 15 Goal zones.
+    /// </summary>
     private void ParsePuzzlesSection(uint length)
     {
-        var startPos = _reader.BaseStream.Position;
-        var endPos = startPos + length;
+        bool yoda = _data.GameType != GameType.IndianaJones;
+        var endPos = _reader.BaseStream.Position + length;
 
-        // Debug: dump first 32 bytes to understand structure
-        var debugBytes = _reader.ReadBytes(Math.Min(32, (int)length));
-        _reader.BaseStream.Seek(startPos, SeekOrigin.Begin);
-        Console.WriteLine($"PUZ2 first 32 bytes: {BitConverter.ToString(debugBytes)}");
-
-        // Try to find IPUZ markers in the section
-        int puzzleId = 0;
-        while (_reader.BaseStream.Position < endPos - 8)
+        while (_reader.BaseStream.Position + 2 <= endPos)
         {
-            var markerPos = _reader.BaseStream.Position;
-            var markerBytes = _reader.ReadBytes(4);
-            var marker = System.Text.Encoding.ASCII.GetString(markerBytes);
+            if (_reader.ReadInt16() == -1)
+                break;
 
-            if (marker == "IPUZ")
+            Expect("IPUZ");
+            var size = _reader.ReadUInt32();
+            var next = _reader.BaseStream.Position + size;
+
+            var puzzle = new Puzzle { Id = _data.Puzzles.Count, Type = (PuzzleType)_reader.ReadInt32() };
+            _reader.ReadUInt32();                    // item1 class
+            if (yoda) _reader.ReadUInt32();          // item2 class
+            _reader.ReadUInt16();                    // unknown
+
+            for (int i = 0; i < 5; i++)
+                puzzle.Strings.Add(System.Text.Encoding.Latin1.GetString(_reader.ReadBytes(_reader.ReadUInt16())).TrimEnd('\0'));
+
+            puzzle.Item1 = _reader.ReadUInt16();
+            if (yoda)
             {
-                // Found IPUZ marker - read puzzle size
-                var puzzleSize = _reader.ReadUInt32();
-                var puzzleDataStart = _reader.BaseStream.Position;
-
-                var puzzle = new Puzzle { Id = puzzleId++ };
-
-                // IPUZ format: type(2), item1(2), item2(2), unknown(2), unknown(2), then 5 strings
-                if (puzzleSize >= 10)
-                {
-                    var puzzleType = _reader.ReadUInt16();
-                    puzzle.Type = (PuzzleType)puzzleType;
-                    puzzle.Item1 = _reader.ReadUInt16();
-                    puzzle.Item2 = _reader.ReadUInt16();
-                    _reader.ReadUInt16(); // unknown
-                    _reader.ReadUInt16(); // unknown
-
-                    // Read strings
-                    for (int i = 0; i < 5 && _reader.BaseStream.Position < puzzleDataStart + puzzleSize; i++)
-                    {
-                        var strLen = _reader.ReadUInt16();
-                        if (strLen > 0 && strLen < 500)
-                        {
-                            var strBytes = _reader.ReadBytes(strLen);
-                            puzzle.Strings.Add(System.Text.Encoding.ASCII.GetString(strBytes).TrimEnd('\0'));
-                        }
-                        else if (strLen == 0)
-                        {
-                            puzzle.Strings.Add("");
-                        }
-                    }
-                }
-
-                // Skip to end of this puzzle
-                _reader.BaseStream.Seek(puzzleDataStart + puzzleSize, SeekOrigin.Begin);
-                _data.Puzzles.Add(puzzle);
-
-                if (puzzleId <= 5)
-                    Console.WriteLine($"  Puzzle {puzzle.Id}: Type={puzzle.Type}, Item1={puzzle.Item1}, Item2={puzzle.Item2}, Str0={puzzle.Strings.FirstOrDefault() ?? ""}");
+                var item2 = _reader.ReadUInt16();
+                puzzle.Item2 = item2 == 0 ? null : item2;   // WebFun: no second item when 0
             }
-            else
-            {
-                // Not at IPUZ, advance by 1 byte and try again
-                _reader.BaseStream.Seek(markerPos + 1, SeekOrigin.Begin);
-            }
+
+            _reader.BaseStream.Seek(next, SeekOrigin.Begin);
+            _data.Puzzles.Add(puzzle);
         }
 
-        // Ensure we're at the end
         _reader.BaseStream.Seek(endPos, SeekOrigin.Begin);
 
-        // Log puzzle statistics
-        var typeStats = _data.Puzzles.GroupBy(p => p.Type).Select(g => $"{g.Key}={g.Count()}");
+        var typeStats = _data.Puzzles.GroupBy(p => p.Type).OrderBy(g => g.Key).Select(g => $"{g.Key}={g.Count()}");
         Console.WriteLine($"Loaded {_data.Puzzles.Count} puzzles: {string.Join(", ", typeStats)}");
     }
 
@@ -730,28 +669,27 @@ public class DtaParser
         var startPos = _reader.BaseStream.Position;
         var endPos = startPos + length;
 
-        // Characters are stored in fixed 84-byte chunks
-        // The number of characters is determined by section length, not a count field
-        const int CharacterSize = 84;
+        // Each entry: int16 index (-1 ends the list), "ICHA", uint32 size, then size bytes.
+        // The size differs by game - Yoda Stories has 6 bytes before the frames that
+        // Indiana Jones does not - so read what each entry says rather than assume one size.
+        int frameBase = _data.GameType == GameType.IndianaJones ? 30 : 36;
 
-        // Calculate number of characters from section length
-        var charCount = (int)(length / CharacterSize);
-
-        for (int i = 0; i < charCount; i++)
+        while (_reader.BaseStream.Position + 10 <= endPos)
         {
-            if (_reader.BaseStream.Position + CharacterSize > endPos)
+            var header = _reader.ReadBytes(10);
+            if (BitConverter.ToInt16(header, 0) == -1)
                 break;
 
-            var charData = _reader.ReadBytes(CharacterSize);
-            var character = ParseCharacterData(i, charData);
-            _data.Characters.Add(character);
+            var size = BitConverter.ToInt32(header, 6);
+            var charData = header.Concat(_reader.ReadBytes(size)).ToArray();
+            _data.Characters.Add(ParseCharacterData(_data.Characters.Count, charData, frameBase));
         }
 
         // Ensure we're at the end of the section
         _reader.BaseStream.Seek(endPos, SeekOrigin.Begin);
     }
 
-    private Character ParseCharacterData(int index, byte[] data)
+    private Character ParseCharacterData(int index, byte[] data, int frameBase)
     {
         var character = new Character { Id = index };
 
@@ -765,21 +703,29 @@ public class DtaParser
         if (nameEnd > 10)
             character.Name = System.Text.Encoding.ASCII.GetString(data, 10, nameEnd - 10);
 
-        // Character type at byte 4 - but this doesn't parse correctly for Yoda Stories
-        // The values are all 72 (0x48) which doesn't match our enum
-        // So we infer type from character name instead
-        character.Type = InferCharacterType(character.Name, index);
+        // The type is the uint16 after the name, at byte 26: 1 hero, 2 enemy, 4 weapon.
+        // (This used to be read from byte 4 - the 'H' of "ICHA", 72 for everyone - so Yoda
+        // Stories fell back to guessing from names, and still does until it is moved over.)
+        // Indiana Jones has no friendly characters: its townsfolk are tiles with scripts, so
+        // guessing let "Rock" - a rolling boulder - pass for someone to talk to.
+        character.Type = _data.GameType == GameType.IndianaJones
+            ? (CharacterType)BitConverter.ToUInt16(data, 26)
+            : InferCharacterType(character.Name, index);
 
-        // Directional tile IDs at bytes 36-47 (6 directions x 2 bytes)
+        // Directional tile IDs start at frameBase (6 directions x 2 bytes)
         var frames = new CharacterFrames();
 
         // The tile IDs for different directions
-        var tileUp = BitConverter.ToUInt16(data, 36);
-        var tileUpRight = BitConverter.ToUInt16(data, 38);
-        var tileRight = BitConverter.ToUInt16(data, 40);
-        var tileDownRight = BitConverter.ToUInt16(data, 42);
-        var tileDown = BitConverter.ToUInt16(data, 44);
-        var tileDownLeft = BitConverter.ToUInt16(data, 46);
+        var tileUp = BitConverter.ToUInt16(data, frameBase);
+        var tileUpRight = BitConverter.ToUInt16(data, frameBase + 2);
+        var tileRight = BitConverter.ToUInt16(data, frameBase + 4);
+        var tileDownRight = BitConverter.ToUInt16(data, frameBase + 6);
+        var tileDown = BitConverter.ToUInt16(data, frameBase + 8);
+        var tileDownLeft = BitConverter.ToUInt16(data, frameBase + 10);
+
+        // Last slot of the first frame: for a weapon character, the inventory tile it is
+        // equipped from (WebFun: frames[0].extensionRight).
+        frames.ExtensionRight = new[] { BitConverter.ToUInt16(data, frameBase + 14) };
 
         // Map to our 4-direction system
         frames.WalkUp = new ushort[] { tileUp, tileUp, tileUp };
@@ -847,17 +793,19 @@ public class DtaParser
     {
         var endPos = _reader.BaseStream.Position + length;
 
-        // Each entry is 4 bytes (2 for reference, 2 for health)
-        var count = (int)(length / 4);
-
-        for (int i = 0; i < count && _reader.BaseStream.Position + 4 <= endPos; i++)
+        // Each entry: int16 character index (-1 ends the list), int16 reference, uint16 health.
+        while (_reader.BaseStream.Position + 2 <= endPos)
         {
-            var reference = _reader.ReadUInt16();
+            var index = _reader.ReadInt16();
+            if (index == -1)
+                break;
+
+            var reference = _reader.ReadInt16();
             var health = _reader.ReadUInt16();
 
-            if (i < _data.Characters.Count)
+            if (index >= 0 && index < _data.Characters.Count)
             {
-                _data.Characters[i].Weapon = new CharacterWeapon
+                _data.Characters[index].Weapon = new CharacterWeapon
                 {
                     Reference = reference,
                     Health = health
@@ -872,46 +820,40 @@ public class DtaParser
     {
         var endPos = _reader.BaseStream.Position + length;
 
-        // Each entry is 2 bytes (damage)
-        var count = (int)(length / 2);
-
-        for (int i = 0; i < count && _reader.BaseStream.Position + 2 <= endPos; i++)
+        // Each entry: int16 character index (-1 ends the list), int16 damage.
+        while (_reader.BaseStream.Position + 2 <= endPos)
         {
-            var damage = _reader.ReadUInt16();
+            var index = _reader.ReadInt16();
+            if (index == -1)
+                break;
 
-            if (i < _data.Characters.Count)
-            {
-                _data.Characters[i].AuxData = new CharacterAux
-                {
-                    Damage = damage
-                };
-            }
+            var damage = _reader.ReadInt16();
+
+            if (index >= 0 && index < _data.Characters.Count)
+                _data.Characters[index].AuxData = new CharacterAux { Damage = damage };
         }
 
         _reader.BaseStream.Seek(endPos, SeekOrigin.Begin);
     }
 
+    /// <summary>
+    /// TNAM: int16 tile id (-1 ends the list), then the name in a fixed-width, NUL-padded
+    /// field - 24 bytes in Yoda Stories, 16 in Indiana Jones (WebFun categories/tile.ts).
+    /// </summary>
     private void ParseTileNamesSection(uint length)
     {
-        var startPos = _reader.BaseStream.Position;
-        var endPos = startPos + length;
+        var endPos = _reader.BaseStream.Position + length;
+        int width = _data.GameType == GameType.IndianaJones ? 0x10 : 0x18;
 
-        while (_reader.BaseStream.Position + 4 <= endPos)
+        while (_reader.BaseStream.Position + 2 <= endPos)
         {
-            var tileId = _reader.ReadUInt16();
-            var nameLength = _reader.ReadUInt16();
-
-            if (nameLength > 0 && nameLength < 256 && _reader.BaseStream.Position + nameLength <= endPos)
-            {
-                var nameBytes = _reader.ReadBytes(nameLength);
-                var name = System.Text.Encoding.ASCII.GetString(nameBytes).TrimEnd('\0');
-                _data.TileNames[tileId] = name;
-            }
-            else if (nameLength >= 256)
-            {
-                // Invalid length, stop parsing
+            var tileId = _reader.ReadInt16();
+            if (tileId == -1)
                 break;
-            }
+
+            var name = System.Text.Encoding.Latin1.GetString(_reader.ReadBytes(width)).Split('\0')[0];
+            if (name.Length > 0)
+                _data.TileNames[tileId] = name;
         }
 
         _reader.BaseStream.Seek(endPos, SeekOrigin.Begin);

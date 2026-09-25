@@ -52,7 +52,7 @@ public class NPC
 
     // Ranged attack (from CHWP weapon data)
     public bool HasRangedAttack { get; set; }
-    public int WeaponTileId { get; set; }  // Projectile visual tile from CHWP Reference
+    public int WeaponCharacterId { get; set; } = -1;  // CHWP reference: the weapon character this NPC fires
 
     // Loot (from IZAX data)
     public bool DropsLoot { get; set; }

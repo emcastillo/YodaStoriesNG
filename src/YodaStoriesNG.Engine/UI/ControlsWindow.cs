@@ -46,8 +46,7 @@ public unsafe class ControlsWindow : IDisposable
         ("Toggle Weapon", "LB / RB"),
         ("", ""),
         ("Game", ""),
-        ("New Game / Restart", "Start"),
-        ("Quit", "Back/Select"),
+        ("Pause Menu (save, load, settings)", "Start / Back"),
         ("", ""),
         ("Notes", ""),
         ("Analog Deadzone", "8000 (of 32768)"),
@@ -87,8 +86,7 @@ public unsafe class ControlsWindow : IDisposable
             return;
         }
 
-        _renderer = SDL.CreateRenderer(_window, -1,
-            (uint)(SDLRendererFlags.Accelerated | SDLRendererFlags.Presentvsync));
+        _renderer = Rendering.GameRenderer.CreateRenderer(_window);
 
         if (_renderer == null)
         {
