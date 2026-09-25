@@ -72,8 +72,16 @@ public unsafe partial class GameEngine
         t.Add((after + 18.6, () => Dev.Capture.Request("game", $"{game}-pause")));
         t.Add((after + 18.8, () => _controllerOverlay?.Close()));
 
+        // --- Indiana Jones: Marcus handing out the mission in his office.
+        if (game == "indy")
+        {
+            t.Add((after + 19.0, StageMarcusBriefing));
+            t.Add((after + 19.6, () => Dev.Capture.Request("game", "indy-marcus")));
+            t.Add((after + 19.9, () => _messages.Clear()));
+        }
+
         // --- Palette animation: park in the zone that uses the most cycling colours.
-        double pal = after + 19.0;
+        double pal = after + 21.0;
         t.Add((pal, () => { LoadZone(FindMostAnimatedZone()); _messages.Clear(); }));
         for (int i = 0; i < PaletteFrames; i++)
         {
@@ -117,6 +125,42 @@ public unsafe partial class GameEngine
         }));
 
         return t;
+    }
+
+    /// <summary>
+    /// Puts the hero in front of Marcus's desk - the town room whose spawn hotspot no script
+    /// answers, as SectorPuzzles has it - and bumps it for the briefing. The bot has usually
+    /// had it already by now, so the town is marked unsolved again to get the full speech.
+    /// </summary>
+    private void StageMarcusBriefing()
+    {
+        var world = _worldGenerator?.CurrentWorld;
+        if (world == null || _sectorPuzzles == null || _gameData == null) return;
+
+        var pending = new Stack<int>(new[] { world.StartingZoneId });
+        var seen = new HashSet<int>();
+        while (pending.Count > 0)
+        {
+            int id = pending.Pop();
+            if (id < 0 || id >= _gameData.Zones.Count || !seen.Add(id)) continue;
+            var zone = _gameData.Zones[id];
+            foreach (var door in zone.Objects.Where(o => o.Type == ZoneObjectType.DoorEntrance))
+                pending.Push(door.Argument);
+
+            foreach (var desk in zone.Objects.Where(o => (int)o.Type == 1))
+            {
+                bool scripted = zone.Actions.Any(a => a.Conditions.Any(c => c.Opcode == ConditionOpcode.Bump &&
+                    c.Arguments.Count > 1 && c.Arguments[0] == desk.X && c.Arguments[1] == desk.Y));
+                if (scripted) continue;
+
+                LoadZone(id, desk.X, desk.Y + 1);
+                _state.PlayerDirection = Direction.Up;
+                _messages.Clear();
+                if (world.Sectors.TryGetValue(id, out var town)) town.Solved = false;
+                _sectorPuzzles.Bump(desk.X, desk.Y);
+                return;
+            }
+        }
     }
 
     /// <summary>

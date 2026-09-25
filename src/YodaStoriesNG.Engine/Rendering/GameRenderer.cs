@@ -1304,29 +1304,41 @@ public unsafe class GameRenderer : IDisposable
         var boxWidth = GameAreaWidth - 20;  // Fit within game area only
         var maxCharsPerLine = (boxWidth - 20) / 8;  // 8 pixels per character
 
-        // Word wrap the text
+        // Word wrap each paragraph on its own. Dialogue carries real line breaks (Indy's
+        // briefings are several paragraphs); splitting on spaces alone drew them as glyphs
+        // and ran the lines into each other.
         var wrappedLines = new List<string>();
-        var words = text.Split(' ');
-        var currentLine = "";
-
-        foreach (var word in words)
+        foreach (var paragraph in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
         {
-            if (currentLine.Length + word.Length + 1 <= maxCharsPerLine)
+            if (paragraph.Trim().Length == 0)
             {
-                currentLine += (currentLine.Length > 0 ? " " : "") + word;
+                if (wrappedLines.Count > 0 && wrappedLines[^1].Length > 0)
+                    wrappedLines.Add("");
+                continue;
             }
-            else
-            {
-                if (currentLine.Length > 0)
-                    wrappedLines.Add(currentLine);
-                currentLine = word;
-            }
-        }
-        if (currentLine.Length > 0)
-            wrappedLines.Add(currentLine);
 
-        // Calculate box height based on lines
+            var currentLine = "";
+            foreach (var word in paragraph.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (currentLine.Length + word.Length + 1 <= maxCharsPerLine)
+                    currentLine += (currentLine.Length > 0 ? " " : "") + word;
+                else
+                {
+                    if (currentLine.Length > 0)
+                        wrappedLines.Add(currentLine);
+                    currentLine = word;
+                }
+            }
+            if (currentLine.Length > 0)
+                wrappedLines.Add(currentLine);
+        }
+        if (wrappedLines.Count > 0 && wrappedLines[^1].Length == 0)
+            wrappedLines.RemoveAt(wrappedLines.Count - 1);
+
+        // Calculate box height based on lines, and grow it upwards so a long speech stays on
+        // screen instead of running off the bottom of the game area.
         var boxHeight = Math.Max(40, 16 + wrappedLines.Count * 12 + 16);
+        y = Math.Min(y, GameAreaHeight - boxHeight - 10);
 
         // Draw background
         SDL.SetRenderDrawColor(_renderer, 20, 20, 50, 230);

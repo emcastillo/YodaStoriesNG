@@ -140,6 +140,8 @@ Convert-Still 'yoda-save-editor'   'save-editor'
 Convert-Still 'yoda-score'         'score-screen'
 Convert-Still 'yoda-r2d2-help'     'r2d2-help'
 Convert-Still 'yoda-pause'         'pause-menu'
+Convert-Still 'indy-pause'         'pause-menu-indy'
+Convert-Still 'indy-marcus'        'marcus-briefing'
 
 if (-not $KeepFrames) {
     Remove-Item -Recurse -Force $frames

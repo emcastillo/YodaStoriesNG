@@ -63,6 +63,8 @@ The sequence, about 45 seconds:
 | 8.1 s | Enable the mission bot and let it play for 17 seconds. |
 | 25 s | Park the bot and clear its toast messages, so the shot shows the game rather than the harness. |
 | 26 s | The gameplay shot. |
+| 26.3 s | Open the pause menu over the live game, capture it, close it. |
+| 27 s | Indiana Jones only: stage Marcus's briefing at his desk in the office zone and capture it. |
 | 27 s | Jump to the most colour-cycled zone in the game, then 24 frames at 75 ms. Becomes `palette-animation.gif`. |
 | 30 s | Move to the zone with the most readable scripted dialogue. |
 | 30 - 38 s | Open, capture and close each tool window: map, script editor, asset viewer, save editor. |
@@ -110,6 +112,9 @@ should stay sharp.
 | `docs/shots/save-editor.png` | Save Game Editor |
 | `docs/shots/score-screen.png` | Force Factor screen |
 | `docs/shots/r2d2-help.png` | R2-D2 hint dialogue |
+| `docs/shots/pause-menu.png` | Pause menu over Yoda Stories |
+| `docs/shots/pause-menu-indy.png` | Pause menu over Indiana Jones |
+| `docs/shots/marcus-briefing.png` | Marcus handing out the Indiana Jones mission |
 
 **Gameplay shots differ every run**, because every run generates a different world. That is
 deliberate: they should look like the game, not like one blessed save file. If a shot lands
@@ -131,7 +136,7 @@ Without `-KeepFrames` the frames are deleted; with it they stay in
 `%TEMP%/ysng-capture/`.
 
 Missing `desktop.daw` is a warning, not an error - you get every shot except
-`gameplay-indy.png`.
+the three Indiana Jones ones.
 
 ---
 

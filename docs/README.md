@@ -20,6 +20,7 @@ The README is the pitch. Everything that needs more than a paragraph lives here.
 | [WORLD-GENERATION.md](WORLD-GENERATION.md) | How a new world is grown from a sector grid into a solvable puzzle chain. |
 | [DEBUG-TOOLS.md](DEBUG-TOOLS.md) | The five debug windows, the mission bot, and the console inspector. |
 | [CAPTURING-SCREENSHOTS.md](CAPTURING-SCREENSHOTS.md) | The in-engine capture harness that produces every image in these docs. |
+| [NOTES-TO-SELF.md](NOTES-TO-SELF.md) | The traps the format and the build set, each already paid for once. Read before touching the parser. |
 | [ROADMAP.md](ROADMAP.md) | What is missing, what is next, and what is deliberately not being done. |
 
 ## Conventions used in these docs

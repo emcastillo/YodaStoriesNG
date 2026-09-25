@@ -123,6 +123,10 @@ public unsafe partial class GameEngine : IDisposable
         if (tileId == TILE_BASIC_LIGHTSABER || tileId == TILE_UPGRADED_LIGHTSABER)
             return (-1, 200, false);
 
+        // Indy's whip is his lightsaber: melee, never runs dry
+        if (tileId == TILE_WHIP && _gameData?.GameType == GameType.IndianaJones)
+            return (-1, 200, false);
+
         // Check tile flags for weapon type
         if (tileId < _gameData!.Tiles.Count)
         {

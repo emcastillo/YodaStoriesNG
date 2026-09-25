@@ -42,9 +42,37 @@ world generator, with Indy's own script opcodes and puzzle types decoded from it
 [WORLD-GENERATION.md](docs/WORLD-GENERATION.md)). The bot plays the first steps of a
 chain but does not finish one yet; that is the top of the [roadmap](docs/ROADMAP.md).
 
+![Marcus briefing Indy in his office](docs/shots/marcus-briefing.png)
+
+*Every Indiana Jones run starts here: Marcus names the artefact, hands over the first item,
+and the generated chain takes it from there.*
+
 ```
 2,123 tiles      658 zones      205 puzzles      8,696 scripts      77 characters
 ```
+
+## Features
+
+What this adds on top of the original, or brings to platforms it never ran on:
+
+- **Both games from one engine** - Yoda Stories and Indiana Jones, detected from the file you
+  point it at, each with its own palette, script opcodes and world generator.
+- **X-tra Large worlds** - a 15x15 map carrying all fifteen missions at once, alongside the
+  original Small, Medium and Large. [PLAYING.md](docs/PLAYING.md#world-sizes)
+- **Xbox controller support** - any SDL gamepad, hot-plugged, with analogue movement and
+  weapon cycling on the bumpers. [PLAYING.md](docs/PLAYING.md#controller)
+- **An in-game pause menu** - save, load, new game, world size, scale, sound and the bot,
+  all reachable from a controller without touching a mouse.
+- **A hideable menu bar** - put it away on Windows, Linux or macOS and play from the pause
+  menu; `F10` brings it back.
+- **Windows, Linux and macOS** - self-contained builds for all three, Intel and Apple
+  Silicon, with a working menu bar on each.
+- **Original sound effects**, played from the game's own WAV files.
+- **A mission bot** - press `B` and it plays the game for you.
+- **Saves that keep the whole world** - plain JSON, restored exactly rather than
+  regenerated, with a built-in editor.
+- **1x / 2x / 4x scaling** and rebindable keys.
+- **Six debug tools** for pulling the data file apart - see [Look inside it](#look-inside-it).
 
 ## How it works
 
@@ -70,24 +98,16 @@ chain but does not finish one yet; that is the top of the [roadmap](docs/ROADMAP
 (Intel and Apple Silicon). You still need your own copy of the game:
 [GAME-DATA.md](docs/GAME-DATA.md).
 
-From source, with the .NET 8 SDK ([BUILDING.md](docs/BUILDING.md)):
+From source, with the .NET 8 SDK - drop `yodesk.dta` into `Yoda/` (and `desktop.daw` into
+`INDYDESK/`) and `dotnet run --project src/YodaStoriesNG.Engine`. Command-line switches and
+publishing are in [BUILDING.md](docs/BUILDING.md).
 
-```bash
-git clone https://github.com/sp00nznet/YodaStoriesNG.git
-cd YodaStoriesNG
+`WASD` to move, `Space` to act, `O` for the objective, `B` to let the bot play it for you.
+**On a controller**, `Start` opens a pause menu that does everything the menu bar does -
+and can hide the menu bar altogether, on Windows, Linux and macOS alike (`F10` brings it
+back). [PLAYING.md](docs/PLAYING.md) has the rest.
 
-# drop yodesk.dta into Yoda/  (and desktop.daw into INDYDESK/, optionally)
-dotnet run --project src/YodaStoriesNG.Engine
-
-# parse and report, without opening a window
-dotnet run --project src/YodaStoriesNG.Engine -- --diag
-
-# the one check that matters: the IACT binary layout
-dotnet run --project src/YodaStoriesNG.Engine -- --self-test
-```
-
-`WASD` to move, `Space` to act, `O` for the objective, `F` to skip to a zone with something
-in it, `B` to let the bot play it for you. [PLAYING.md](docs/PLAYING.md) has the rest.
+![the pause menu over Indiana Jones](docs/shots/pause-menu-indy.png)
 
 ## Look inside it
 
@@ -103,43 +123,15 @@ second monitor. [DEBUG-TOOLS.md](docs/DEBUG-TOOLS.md)
 
 ## Notes to self
 
-Traps this format sets, each paid for once already:
-
-- **An IACT script item always has five argument slots.** There is no count field. Reading
-  slot 0 as a count parses cleanly, shifts every argument by one, and turns dialogue into
-  slices of the next section header - and the game still *mostly* runs. `--self-test`
-  exists so it cannot come back.
-- **The version field does not identify the game.** Retail `DESKTOP.DAW` reports 2.0,
-  exactly like Yoda Stories. Trust the file name.
-- **`TileAtIs` and `IsVariable` put the tile in slot 0** and the position after it, unlike
-  every other tile opcode.
-- **The zone count in the `ZONE` header is right; scanning for `IZON` markers is wrong.**
-  The scan found 27 of Indiana Jones' 366 zones. Read by the counts.
-- **Indiana Jones is not Yoda Stories with other art.** Its script opcodes are numbered
-  differently, its zones keep their scripts in separate sections, and the field its puzzles'
-  documentation calls an item class is the puzzle type.
-- **Read the backbuffer before `RenderPresent`, not after** - which is why every window
-  flushes its own screenshot rather than the game loop doing it centrally.
-- **A single-file publish needs `IncludeAllContentForSelfExtract`, not just
-  `IncludeNativeLibrariesForSelfExtract`.** Without it the binary parses a data file
-  perfectly and then dies on the first SDL call, so "does it start" does not catch it.
-
-## Screenshots
-
-Every image here is generated, never hand-taken:
-
-```powershell
-pwsh tools/capture-shots.ps1
-```
-
-Two minutes. It builds, plays itself through every screen with the bot, and converts the
-frames. [CAPTURING-SCREENSHOTS.md](docs/CAPTURING-SCREENSHOTS.md)
+The traps this format sets - five fixed argument slots with no count, a version field that
+lies, a zone count you must trust over a marker scan - are written up in
+[NOTES-TO-SELF.md](docs/NOTES-TO-SELF.md). Read it before touching the parser.
 
 ## Layout
 
 ```
 docs/                     everything needing more than a paragraph - start at docs/README.md
-  hero.gif  shots/        generated by tools/capture-shots.ps1, never by hand
+  hero.gif  shots/        generated by tools/capture-shots.ps1, never by hand (CAPTURING-SCREENSHOTS.md)
 src/
   YodaStoriesNG.Engine/     THE GAME - plays both .dta and .daw
     Parsing/DtaParser.cs      the whole file format
@@ -162,8 +154,8 @@ repository** - you must own a legal copy of whichever game you load.
 
 Code is [MIT](LICENSE); see [NOTICE](NOTICE) for what that does and does not cover.
 File-format work is cross-checked against
-[WebFun](https://codeberg.org/cyco/WebFun), without which several of the notes above would
-still be open bugs.
+[WebFun](https://codeberg.org/cyco/WebFun), without which several of the
+[notes to self](docs/NOTES-TO-SELF.md) would still be open bugs.
 
 ---
 
