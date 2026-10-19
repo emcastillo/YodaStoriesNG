@@ -1,4 +1,4 @@
-﻿using YodaStoriesNG.Engine.Data;
+using YodaStoriesNG.Engine.Data;
 using YodaStoriesNG.Engine.Parsing;
 
 namespace YodaStoriesNG.Engine.Dev;
@@ -210,6 +210,14 @@ public static class SelfTest
         Assert(gun.AuxData?.Damage == 4, $"damage was {gun.AuxData?.Damage}");
         Assert(gun.Frames.ExtensionRight.FirstOrDefault() == 512,
             $"weapon tile was {gun.Frames.ExtensionRight.FirstOrDefault()}");
+        Assert(hero.Frames.WalkUp.SequenceEqual(new ushort[] { 100, 108, 116 }),
+            "up animation did not read all three frames from slot 0");
+        Assert(hero.Frames.WalkDown.SequenceEqual(new ushort[] { 101, 109, 117 }),
+            "down animation did not read all three frames from slot 1");
+        Assert(hero.Frames.WalkLeft.SequenceEqual(new ushort[] { 103, 111, 119 }),
+            "left animation did not read all three frames from slot 3");
+        Assert(hero.Frames.WalkRight.SequenceEqual(new ushort[] { 106, 114, 122 }),
+            "right animation did not read all three frames from slot 6");
     }
 
     private static byte[] BuildCharacterFile(GameType game)
@@ -237,7 +245,10 @@ public static class SelfTest
             if (game == GameType.YodaStories)
                 w.Write(new byte[6]);              // the two fields Indiana Jones does not have
             for (int slot = 0; slot < 24; slot++)
-                w.Write((short)(slot == 7 ? weaponTile : 0));
+            {
+                int tileId = index == 1 && slot == 7 ? weaponTile : 100 + index * 100 + slot;
+                w.Write((short)tileId);
+            }
             Backfill(w, recordAt, stream.Position - recordStart);
         }
         w.Write((short)-1);
