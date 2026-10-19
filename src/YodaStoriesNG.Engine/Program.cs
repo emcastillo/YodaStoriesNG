@@ -10,6 +10,18 @@ class Program
         if (args.Contains("--self-test"))
             return Dev.SelfTest.Run();
 
+        // Replay native landing/takeoff scripts through the engine without creating a window.
+        if (args.Length >= 2 && args[0] == "--xwing-audit")
+            return GameEngine.AuditXWingTravel(args[1]);
+
+        // Headless mission graph audit: generate worlds, compute item and zone reachability,
+        // then write a Graphviz DOT graph. No renderer or SDL window is initialized.
+        if (args.Length >= 2 && args[0] == "--mission-graph")
+            return Dev.MissionReachabilityGraph.Run(
+                args[1],
+                args.Length >= 3 && int.TryParse(args[2], out int auditCount) ? auditCount : 50,
+                args.Length >= 4 ? args[3] : null);
+
         // Headless: generate many worlds from a data file and report how they went.
         if (args.Length >= 2 && args[0] == "--generate")
             return Dev.GenerateWorlds.Run(args[1], args.Length >= 3 ? int.Parse(args[2]) : 200);

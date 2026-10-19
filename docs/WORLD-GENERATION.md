@@ -226,8 +226,20 @@ dotnet run --project src/YodaStoriesNG.Engine -- --generate INDYDESK/DESKTOP.DAW
 
 which reports how many seeds succeed, why the rest failed, and one world's chain.
 
-Yoda Stories still uses the older generator above. The same port runs on Yoda's data
-(about 95% of seeds succeed), so switching Yoda over is a decision, not new work.
+Yoda Stories uses this original generator as well. It builds both item strains and joins
+them at the selected Mission puzzle. Each strain has its own reachable starting item.
+
+### Headless mission reachability graph
+
+This command generates worlds without opening or rendering the game, then checks zone
+reachability, blockade and travel requirements, item flow, and that every generated puzzle
+is represented by the mission chain. It exits with an error if any puzzle cannot be reached
+or solved from the items the world provides. The DOT file shows the zones, puzzles, item
+requirements/rewards, and gated paths; open it with Graphviz to inspect the graph.
+
+```bash
+dotnet run --project src/YodaStoriesNG.Engine -- --mission-graph Yoda/yodesk.dta 500 /tmp/yoda-mission-reachability.dot
+```
 
 ## Related documents
 

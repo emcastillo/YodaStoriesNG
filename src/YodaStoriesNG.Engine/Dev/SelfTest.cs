@@ -1,5 +1,6 @@
 ﻿using YodaStoriesNG.Engine.Data;
 using YodaStoriesNG.Engine.Parsing;
+using YodaStoriesNG.Engine.Game;
 
 namespace YodaStoriesNG.Engine.Dev;
 
@@ -31,6 +32,10 @@ public static class SelfTest
         failures += Check("menu bar keeps off user32 away from Windows", MenuBarStaysOffUser32);
         failures += Check("file filters convert for portable dialogs", FilterConvertsToExtensions);
         failures += Check("SDL menu bar works from the keyboard", MenuBarKeyboard);
+        failures += Check("paused actions keep their owner and entry context", PausedActionKeepsContext);
+        failures += Check("hotspot toggles preserve map tiles", HotspotTogglesPreserveTiles);
+        failures += Check("scripted travel requests a complete zone load", ScriptedTravelRequestsLoad);
+        failures += Check("mission identity and script variables agree with their readers", MissionScriptState);
 
         Console.WriteLine(failures == 0 ? "\nSelf-test PASSED" : $"\nSelf-test FAILED ({failures})");
         return failures == 0 ? 0 : 1;
@@ -49,6 +54,132 @@ public static class SelfTest
             Console.WriteLine($"  FAIL {name}: {ex.Message}");
             return 1;
         }
+    }
+
+    private static void PausedActionKeepsContext()
+    {
+        var zone = new Zone { Id = 1, Width = 2, Height = 2, TileGrid = new ushort[2, 2, 3] };
+        zone.Actions.Add(new Data.Action
+        {
+            Conditions = { new Condition { Opcode = ConditionOpcode.ZoneEntered } },
+            Instructions =
+            {
+                new Instruction { Opcode = InstructionOpcode.HideHero },
+                new Instruction { Opcode = InstructionOpcode.Wait },
+                new Instruction { Opcode = InstructionOpcode.MoveHeroTo, Arguments = { 1, 1 } },
+                new Instruction { Opcode = InstructionOpcode.Wait },
+                new Instruction { Opcode = InstructionOpcode.ShowHero },
+                new Instruction { Opcode = InstructionOpcode.DisableAction }
+            }
+        });
+        zone.Actions.Add(new Data.Action
+        {
+            Conditions = { new Condition { Opcode = ConditionOpcode.EnterByPlane } },
+            Instructions = { new Instruction { Opcode = InstructionOpcode.SetCounter, Arguments = { 7 } } }
+        });
+        var state = new GameState { CurrentZone = zone, CurrentZoneId = zone.Id };
+        var executor = new ActionExecutor(new GameData(), state);
+        executor.ExecuteZoneActions(ActionTrigger.ZoneEnter, enteredByPlane: true);
+        Assert(executor.IsBusy && !state.HeroVisible, "first Wait did not suspend the landing");
+        Assert(state.GetCounter(zone.Id) == 0, "a later action ran during a paused action");
+
+        // LoadZone marks initialization complete while its landing continues on later ticks.
+        state.SetVariable(zone.Id + 1000, 1);
+        executor.ExecuteZoneActions(ActionTrigger.Walk);
+        Assert(executor.IsBusy && !state.HeroVisible && state.PlayerX == 1 && state.PlayerY == 1,
+            "the resumed action skipped its second Wait");
+        Assert(state.GetCounter(zone.Id) == 0, "the entry scan resumed before the animation completed");
+        executor.ExecuteZoneActions(ActionTrigger.Walk);
+        Assert(!executor.IsBusy && state.HeroVisible, "landing never restored the hero");
+        Assert(state.DisabledActions.Contains((zone.Id, 0)) && !state.DisabledActions.Contains((zone.Id, 1)),
+            "DisableAction disabled the wrong action after Wait");
+        Assert(state.GetCounter(zone.Id) == 7, "plane-arrival context was lost after Wait");
+
+        executor.ExecuteZoneActions(ActionTrigger.ZoneEnter, enteredByPlane: true);
+        Assert(!executor.IsBusy, "a disabled animation started again");
+    }
+
+    private static void MissionScriptState()
+    {
+        var goal = new Puzzle { Item1 = 810, Type = PuzzleType.Mission };
+        var mission = new Mission { GoalPuzzle = goal };
+        mission.PuzzleChain.Add(new PuzzleStep { Puzzle = goal, RequiredItemId = 809 });
+        var zone = new Zone { Id = 1, Width = 2, Height = 2, TileGrid = new ushort[2, 2, 3] };
+        zone.Objects.Add(new ZoneObject { Type = ZoneObjectType.XWingFromDagobah, Enabled = false });
+        zone.Actions.Add(new Data.Action
+        {
+            Conditions =
+            {
+                new Condition { Opcode = ConditionOpcode.ZoneEntered },
+                new Condition { Opcode = ConditionOpcode.EndingIs, Arguments = { 810 } }
+            },
+            Instructions =
+            {
+                new Instruction { Opcode = InstructionOpcode.EnableHotspot, Arguments = { 0 } },
+                new Instruction { Opcode = InstructionOpcode.SetVariable, Arguments = { 1, 1, 0, 7 } }
+            }
+        });
+        zone.Actions.Add(new Data.Action
+        {
+            Conditions = { new Condition { Opcode = ConditionOpcode.IsVariable, Arguments = { 7, 1, 1, 0 } } },
+            Instructions = { new Instruction { Opcode = InstructionOpcode.SetCounter, Arguments = { 7 } } }
+        });
+        zone.Actions.Add(new Data.Action
+        {
+            Conditions = { new Condition { Opcode = ConditionOpcode.HasGoalItem } },
+            Instructions = { new Instruction { Opcode = InstructionOpcode.SetCounter, Arguments = { 8 } } }
+        });
+        var state = new GameState { CurrentZone = zone, CurrentZoneId = 1 };
+        var executor = new ActionExecutor(new GameData(), state) { CurrentMission = mission };
+        executor.ExecuteZoneActions(ActionTrigger.ZoneEnter);
+        Assert(zone.Objects[0].Enabled, "mission hotspot was selected by a prerequisite instead of the mission item");
+        executor.ExecuteZoneActions(ActionTrigger.Walk);
+        Assert(state.GetCounter(1) == 7, "IsVariable did not see the value written by SetVariable");
+        state.AddItem(809);
+        executor.ExecuteZoneActions(ActionTrigger.Walk);
+        Assert(state.GetCounter(1) == 7, "a prerequisite was treated as the goal item");
+        state.AddItem(810);
+        executor.ExecuteZoneActions(ActionTrigger.Walk);
+        Assert(state.GetCounter(1) == 8, "the mission item was not recognized outside a puzzle sector");
+    }
+
+    private static void HotspotTogglesPreserveTiles()
+    {
+        var zone = new Zone { Id = 1, Width = 1, Height = 1, TileGrid = new ushort[1, 1, 3] };
+        zone.SetTile(0, 0, 1, 953);
+        zone.Objects.Add(new ZoneObject { Type = ZoneObjectType.XWingToDagobah, Argument = 93 });
+        zone.Actions.Add(new Data.Action
+        {
+            Instructions = { new Instruction { Opcode = InstructionOpcode.DisableHotspot, Arguments = { 0 } } }
+        });
+        var state = new GameState { CurrentZone = zone, CurrentZoneId = zone.Id };
+        var executor = new ActionExecutor(new GameData(), state);
+        executor.ExecuteZoneActions(ActionTrigger.Walk);
+        Assert(!zone.Objects[0].Enabled && zone.GetTile(0, 0, 1) == 953, "disabling hotspot removed the ship");
+        zone.Actions[0].Instructions[0].Opcode = InstructionOpcode.EnableHotspot;
+        executor.ExecuteZoneActions(ActionTrigger.Walk);
+        Assert(zone.Objects[0].Enabled && zone.GetTile(0, 0, 1) == 953, "enabling hotspot drew a zone ID as a tile");
+    }
+
+    private static void ScriptedTravelRequestsLoad()
+    {
+        var zone = new Zone { Id = 1 };
+        zone.Actions.Add(new Data.Action
+        {
+            Instructions =
+            {
+                new Instruction { Opcode = InstructionOpcode.ChangeZone, Arguments = { 2, 3, 4 } },
+                new Instruction { Opcode = InstructionOpcode.HideHero }
+            }
+        });
+        var state = new GameState { CurrentZone = zone, CurrentZoneId = 1 };
+        var executor = new ActionExecutor(new GameData(), state);
+        executor.ExecuteZoneActions(ActionTrigger.Walk);
+        Assert(executor.RequestedZoneChange == (2, 3, 4), "zone change was not requested");
+        Assert(state.CurrentZoneId == 1 && ReferenceEquals(state.CurrentZone, zone) && state.HeroVisible,
+            "travel left the zone ID and loaded map out of sync, or continued source instructions");
+        executor.ResetForZone();
+        Assert(!executor.RequestedZoneChange.HasValue && !executor.IsBusy, "zone entry retained an old script");
     }
 
     private static void IactRoundTrip(GameType game)

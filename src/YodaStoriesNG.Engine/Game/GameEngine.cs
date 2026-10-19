@@ -717,7 +717,7 @@ public unsafe partial class GameEngine : IDisposable
         var startZoneId = world.StartingZoneId;
         if (startZoneId >= 0 && startZoneId < _gameData!.Zones.Count)
         {
-            LoadZone(startZoneId);
+            LoadZone(startZoneId, enteredByPlane: _gameData.GameType == GameType.YodaStories);
         }
         else
         {
@@ -895,7 +895,7 @@ public unsafe partial class GameEngine : IDisposable
     /// <summary>
     /// Loads a zone by ID.
     /// </summary>
-    public void LoadZone(int zoneId, int? spawnX = null, int? spawnY = null)
+    public void LoadZone(int zoneId, int? spawnX = null, int? spawnY = null, bool enteredByPlane = false)
     {
         if (zoneId < 0 || zoneId >= _gameData!.Zones.Count)
         {
@@ -912,7 +912,13 @@ public unsafe partial class GameEngine : IDisposable
 
         _state.CurrentZoneId = zoneId;
         _state.CurrentZone = zone;
+        _actionExecutor?.ResetForZone();
+        if (enteredByPlane && _gameData.GameType == GameType.YodaStories)
+            PrepareXWingLanding(zone);
         _state.MarkZoneVisited(zoneId);
+        // HideHero is zone-script state. A new zone must not inherit a hidden hero from a
+        // previous bump or interrupted cutscene; zone-entry actions can hide it again.
+        _state.HeroVisible = true;
 
         // Notify script viewer of zone change
         _scriptViewer?.JumpToCurrentZone();
@@ -947,7 +953,7 @@ public unsafe partial class GameEngine : IDisposable
         }
 
         // Validate spawn position - find walkable tile if spawn is blocked
-        if (!IsSpawnPositionWalkable(_state.PlayerX, _state.PlayerY, zone))
+        if (!enteredByPlane && !IsSpawnPositionWalkable(_state.PlayerX, _state.PlayerY, zone))
         {
             Console.WriteLine($"Spawn position ({_state.PlayerX},{_state.PlayerY}) is blocked, searching for walkable tile...");
             var walkable = FindNearestWalkablePosition(_state.PlayerX, _state.PlayerY, zone);
@@ -999,7 +1005,7 @@ public unsafe partial class GameEngine : IDisposable
         if (_actionExecutor != null)
         {
             _actionExecutor.SuppressDialogue = true;
-            _actionExecutor.ExecuteZoneActions(ActionTrigger.ZoneEnter);
+            _actionExecutor.ExecuteZoneActions(ActionTrigger.ZoneEnter, enteredByPlane);
             _actionExecutor.SuppressDialogue = false;
         }
 
@@ -1890,6 +1896,9 @@ public unsafe partial class GameEngine : IDisposable
 
     private void TryMovePlayer(int dx, int dy, Direction direction, bool tryPull = false)
     {
+        if (_actionExecutor?.IsBusy == true || !_state.HeroVisible)
+            return;
+
         _state.PlayerDirection = direction;
 
         var newX = _state.PlayerX + dx;
@@ -1901,6 +1910,18 @@ public unsafe partial class GameEngine : IDisposable
         {
             // Try to transition to adjacent zone
             HandleZoneTransition(dx, dy);
+            return;
+        }
+
+        // X-Wing hotspots can sit on a solid vehicle tile. Route boarding before the
+        // normal collision path calls BumpInto; otherwise the player stays in this zone
+        // and a bump script can hide the hero without ever traveling.
+        var xwingHotspot = _state.CurrentZone.Objects.FirstOrDefault(obj =>
+            obj.Enabled && obj.X == newX && obj.Y == newY &&
+            obj.Type is ZoneObjectType.XWingFromDagobah or ZoneObjectType.XWingToDagobah);
+        if (xwingHotspot != null)
+        {
+            TravelToPlanet(xwingHotspot);
             return;
         }
 
@@ -2166,6 +2187,9 @@ public unsafe partial class GameEngine : IDisposable
         // First check for door/teleporter objects
         foreach (var obj in _state.CurrentZone!.Objects)
         {
+            if (!obj.Enabled)
+                continue;
+
             // Check if this is a transition object at player pos or just past edge
             bool atPlayerPos = obj.X == _state.PlayerX && obj.Y == _state.PlayerY;
             bool atEdge = obj.X == Math.Clamp(edgeX, 0, _state.CurrentZone.Width - 1) &&
@@ -2176,12 +2200,15 @@ public unsafe partial class GameEngine : IDisposable
 
             switch (obj.Type)
             {
+                case ZoneObjectType.XWingFromDagobah:
+                case ZoneObjectType.XWingToDagobah:
+                    TravelToPlanet(obj);
+                    return;
+
                 case ZoneObjectType.DoorEntrance:
                 case ZoneObjectType.DoorExit:
                 case ZoneObjectType.VehicleToSecondary:
                 case ZoneObjectType.VehicleToPrimary:
-                case ZoneObjectType.XWingFromDagobah:
-                case ZoneObjectType.XWingToDagobah:
                 case ZoneObjectType.Teleporter:
                     // Handle return doors (65535 means go back)
                     int destZoneId = obj.Argument;
@@ -2377,6 +2404,9 @@ public unsafe partial class GameEngine : IDisposable
     {
         foreach (var obj in _state.CurrentZone!.Objects)
         {
+            if (!obj.Enabled)
+                continue;
+
             if (obj.X != _state.PlayerX || obj.Y != _state.PlayerY)
                 continue;
 
@@ -2441,8 +2471,6 @@ public unsafe partial class GameEngine : IDisposable
                 case ZoneObjectType.Teleporter:
                 case ZoneObjectType.VehicleToSecondary:
                 case ZoneObjectType.VehicleToPrimary:
-                case ZoneObjectType.XWingFromDagobah:
-                case ZoneObjectType.XWingToDagobah:
                 case ZoneObjectType.DoorEntrance:
                 case ZoneObjectType.DoorExit:
                     // Handle 65535 (0xFFFF) as "return to previous zone"
@@ -2490,6 +2518,11 @@ public unsafe partial class GameEngine : IDisposable
                     }
                     break;
 
+                case ZoneObjectType.XWingFromDagobah:
+                case ZoneObjectType.XWingToDagobah:
+                    TravelToPlanet(obj);
+                    return;
+
                 case ZoneObjectType.Trigger:
                     _actionExecutor?.ExecuteZoneActions(ActionTrigger.Walk);
                     break;
@@ -2505,6 +2538,9 @@ public unsafe partial class GameEngine : IDisposable
             _messages.DismissDialogue();
             return;
         }
+
+        if (_actionExecutor?.IsBusy == true || !_state.HeroVisible)
+            return;
 
         if (_state.SelectedItem.HasValue)
         {
@@ -2996,9 +3032,20 @@ public unsafe partial class GameEngine : IDisposable
                             _state.AddItem(world.StartingItemId.Value);
                             var itemName = GetTileName(world.StartingItemId.Value) ?? "an item";
 
-                            // Show mission briefing
+                            // Puzzle string 0 is only the mission title. String 3 is the
+                            // full briefing used by the original mission handoff.
+                            var goalPuzzle = mission?.GoalPuzzle;
+                            var missionText = goalPuzzle != null && goalPuzzle.Strings.Count > 3
+                                ? goalPuzzle.Strings[3].Trim()
+                                : "";
+                            if (string.IsNullOrWhiteSpace(missionText))
+                                missionText = mission?.Description ?? "";
+                            if (string.IsNullOrWhiteSpace(missionText))
+                                missionText = mission?.Name ?? "";
+
+                            // Show the full mission briefing, then identify the item Yoda gives.
                             var briefing = mission != null
-                                ? $"A mission for you, I have. {mission.Name}. Take this {itemName}. To {mission.Planet}, you must go. Find your X-Wing nearby."
+                                ? $"A mission for you, I have. {mission.Name}\n\n{missionText}\n\nTake this {itemName}. To {mission.Planet}, you must go. Find your X-Wing nearby."
                                 : $"Take this {itemName}. Your journey begins. Find your X-Wing nearby.";
                             _messages.ShowDialogue("Yoda", briefing);
                             _messages.ShowMessage($"Received: {itemName}", MessageType.Pickup);
@@ -3078,6 +3125,9 @@ public unsafe partial class GameEngine : IDisposable
 
     private void PerformAttack()
     {
+        if (_actionExecutor?.IsBusy == true || !_state.HeroVisible)
+            return;
+
         // Determine weapon type
         bool isRanged = false;
         if (_state.SelectedWeapon.HasValue && _state.SelectedWeapon.Value > 0)
@@ -3730,6 +3780,7 @@ public unsafe partial class GameEngine : IDisposable
     /// </summary>
     private void CheckForXWing(int zoneId)
     {
+        _state.XWingPosition = null;
         if (_worldGenerator?.CurrentWorld == null) return;
 
         // X-Wing is available in all Dagobah zones
@@ -3738,18 +3789,28 @@ public unsafe partial class GameEngine : IDisposable
             _state.SetVariable(999, 1);  // X-Wing available
             Console.WriteLine($"  X-Wing available (press X anywhere to travel)");
 
-            // Spawn X-Wing as an NPC so it renders like other characters
+            // The source data has several X-Wing hotspots at the same coordinates, one
+            // for each possible landing zone. Enable only this world's destination.
             if (_state.CurrentZone != null)
             {
-                foreach (var obj in _state.CurrentZone.Objects)
+                var xwingHotspots = _state.CurrentZone.Objects
+                    .Where(obj => obj.Type == ZoneObjectType.XWingFromDagobah)
+                    .ToList();
+                var landingZoneId = _worldGenerator.CurrentWorld.LandingZoneId;
+                var activeHotspot = xwingHotspots.FirstOrDefault(obj => obj.Argument == landingZoneId)
+                    ?? xwingHotspots.FirstOrDefault(obj => obj.FileArgument == landingZoneId)
+                    ?? xwingHotspots.FirstOrDefault();
+
+                // These hotspots belong to the shared parsed game data. Keep every
+                // destination entry intact so the next generated mission can choose a
+                // different one; only toggle which one is active in this world.
+                foreach (var hotspot in xwingHotspots)
+                    hotspot.Enabled = ReferenceEquals(hotspot, activeHotspot);
+
+                if (activeHotspot != null)
                 {
-                    if (obj.Type == ZoneObjectType.XWingFromDagobah)
-                    {
-                        Console.WriteLine($"  X-Wing location at ({obj.X}, {obj.Y})");
-                        // Store X-Wing position for rendering
-                        _state.XWingPosition = (obj.X, obj.Y);
-                        break;
-                    }
+                    Console.WriteLine($"  X-Wing location at ({activeHotspot.X}, {activeHotspot.Y})");
+                    _state.XWingPosition = (activeHotspot.X, activeHotspot.Y);
                 }
             }
         }
@@ -3762,12 +3823,19 @@ public unsafe partial class GameEngine : IDisposable
     /// <summary>
     /// Handles X-Wing travel between Dagobah and mission planet.
     /// </summary>
-    private void TravelToPlanet()
+    private void TravelToPlanet(ZoneObject? departureHotspot = null)
     {
         if (_worldGenerator?.CurrentWorld == null) return;
+        if (_actionExecutor?.IsBusy == true) return;
 
         var world = _worldGenerator.CurrentWorld;
-        bool onDagobah = world.DagobahZones.Contains(_state.CurrentZoneId);
+        departureHotspot ??= _state.CurrentZone?.Objects.FirstOrDefault(obj => obj.Enabled &&
+            obj.Type is ZoneObjectType.XWingFromDagobah or ZoneObjectType.XWingToDagobah);
+        // The capture mission also departs from a medical station outside Dagobah.
+        // The hotspot's direction applies there just as it does on the main planet.
+        bool onDagobah = departureHotspot != null
+            ? departureHotspot.Type == ZoneObjectType.XWingFromDagobah
+            : world.DagobahZones.Contains(_state.CurrentZoneId);
 
         if (onDagobah)
         {
@@ -3787,8 +3855,13 @@ public unsafe partial class GameEngine : IDisposable
                 var xwingObj = destZone.Objects.FirstOrDefault(o => o.Type == ZoneObjectType.XWingToDagobah);
                 if (xwingObj != null)
                 {
+                    // A previous zone script or mission may have disabled this shared
+                    // hotspot. Boarding must remain available in each newly generated world.
+                    xwingObj.Enabled = true;
                     spawnX = xwingObj.X;
-                    spawnY = xwingObj.Y + 1; // Spawn below the X-Wing
+                    // This is a transit marker, not the cockpit. Landing scripts use
+                    // this exact position to decide which arrival sequence to play.
+                    spawnY = xwingObj.Y;
                     Console.WriteLine($"Landing at X-Wing position ({xwingObj.X},{xwingObj.Y}), Luke spawns at ({spawnX},{spawnY})");
                 }
                 else
@@ -3803,7 +3876,8 @@ public unsafe partial class GameEngine : IDisposable
                     Console.WriteLine($"WARNING: No X-Wing in landing zone, using fallback spawn ({spawnX},{spawnY})");
                 }
 
-                LoadZone(landingZoneId, spawnX, spawnY);
+                ClearXWingTiles(_state.CurrentZone!);
+                LoadZone(landingZoneId, spawnX, spawnY, enteredByPlane: true);
             }
             else
             {
@@ -3828,7 +3902,7 @@ public unsafe partial class GameEngine : IDisposable
                     if (obj.Type == ZoneObjectType.XWingFromDagobah)
                     {
                         spawnX = obj.X;
-                        spawnY = obj.Y + 1;  // Spawn below X-Wing
+                        spawnY = obj.Y + 2;  // Dagobah's arrival script expects (6,12).
                         break;
                     }
                     if (obj.Type == ZoneObjectType.SpawnLocation)
@@ -3838,9 +3912,70 @@ public unsafe partial class GameEngine : IDisposable
                     }
                 }
 
-                LoadZone(dagobahZoneId, spawnX, spawnY);
+                ClearXWingTiles(_state.CurrentZone!);
+                LoadZone(dagobahZoneId, spawnX, spawnY, enteredByPlane: true);
             }
         }
+    }
+
+    // The eight native ship tiles belong to the landing/takeoff scripts. Remove
+    // fragments from a shortcut or interrupted flight before starting a new landing.
+    private static void ClearXWingTiles(Zone zone)
+    {
+        for (int y = 0; y < zone.Height; y++)
+        for (int x = 0; x < zone.Width; x++)
+        for (int layer = 1; layer < 3; layer++)
+            if (zone.GetTile(x, y, layer) is >= 948 and <= 955)
+                zone.SetTile(x, y, layer, ushort.MaxValue);
+    }
+
+    private void PrepareXWingLanding(Zone zone)
+    {
+        // Identify the native landing animation by its ship drawing and Hide/ShowHero
+        // pair. Its counter/variable guards describe the flight state for arrival.
+        var landing = zone.Actions.FirstOrDefault(action =>
+            action.Conditions.Any(c => c.Opcode == ConditionOpcode.EnterByPlane) &&
+            action.Instructions.Any(i => i.Opcode == InstructionOpcode.HideHero) &&
+            action.Instructions.Any(i => i.Opcode == InstructionOpcode.ShowHero) &&
+            action.Instructions.Any(i => i.Opcode == InstructionOpcode.PlaceTile &&
+                i.Arguments.Count >= 4 && i.Arguments[3] is >= 948 and <= 955));
+        if (landing == null)
+            return;
+
+        ClearXWingTiles(zone);
+        foreach (var condition in landing.Conditions)
+        {
+            var args = condition.Arguments;
+            if (condition.Opcode == ConditionOpcode.CounterIs && args.Count >= 1)
+                _state.SetCounter(zone.Id, args[0]);
+            else if (condition.Opcode == ConditionOpcode.IsVariable && args.Count >= 4)
+                zone.SetTile(args[1], args[2], args[3], (ushort)args[0]);
+        }
+    }
+
+    /// <summary>Complete explicit zone changes and flight scripts' final transit-marker move.</summary>
+    private bool CompleteScriptedTravel()
+    {
+        if (_actionExecutor?.RequestedZoneChange is { } requested)
+        {
+            bool arrivingByVehicle = !_state.HeroVisible;
+            _actionExecutor.ResetForZone();
+            LoadZone(requested.ZoneId, requested.X, requested.Y, arrivingByVehicle);
+            return true;
+        }
+
+        if (_actionExecutor?.IsBusy == true || _state.CurrentZone == null)
+            return false;
+
+        var hotspot = _state.CurrentZone.Objects.FirstOrDefault(obj => obj.Enabled &&
+            obj.X == _state.PlayerX && obj.Y == _state.PlayerY &&
+            obj.Type is ZoneObjectType.XWingFromDagobah or ZoneObjectType.XWingToDagobah);
+        if (hotspot == null)
+            return false;
+
+        int previousZone = _state.CurrentZoneId;
+        TravelToPlanet(hotspot);
+        return previousZone != _state.CurrentZoneId;
     }
 
     private void Update(double deltaTime)
@@ -3871,6 +4006,13 @@ public unsafe partial class GameEngine : IDisposable
 
         // First script evaluation (before NPC/projectile updates)
         _actionExecutor?.ExecuteZoneActions(ActionTrigger.Walk);
+        if (CompleteScriptedTravel())
+            return;
+        if (_actionExecutor?.IsBusy == true)
+        {
+            UpdateCamera();
+            return;
+        }
 
         // Update NPC AI
         UpdateNPCs(deltaTime);
@@ -3881,6 +4023,13 @@ public unsafe partial class GameEngine : IDisposable
         // Second script evaluation (after NPC/projectile updates, before input)
         // This ensures scripts that depend on NPC state changes (like all-monsters-dead) trigger promptly
         _actionExecutor?.ExecuteZoneActions(ActionTrigger.Walk);
+        if (CompleteScriptedTravel())
+            return;
+        if (_actionExecutor?.IsBusy == true)
+        {
+            UpdateCamera();
+            return;
+        }
 
         // Update bot AI
         if (_bot?.IsRunning == true)
@@ -4377,9 +4526,6 @@ public unsafe partial class GameEngine : IDisposable
         // Render zone
         _renderer.RenderZone(_state.CurrentZone, _state.CameraX, _state.CameraY);
 
-        // Render X-Wing if in Dagobah zone
-        RenderXWing();
-
         // Render zone items (crates, weapons on ground)
         RenderZoneItems();
 
@@ -4527,32 +4673,6 @@ public unsafe partial class GameEngine : IDisposable
                 evt->Motion.Y -= (int)Rendering.GameRenderer.MenuBarHeight;
                 break;
         }
-    }
-
-    /// <summary>
-    /// Renders the X-Wing at its position in the starting zone only.
-    /// </summary>
-    private void RenderXWing()
-    {
-        if (_renderer == null || _state.XWingPosition == null || _worldGenerator == null)
-            return;
-
-        // Only render X-Wing in the starting zone
-        if (_state.CurrentZoneId != _worldGenerator.CurrentWorld.XWingZoneId)
-            return;
-
-        var (xwingX, xwingY) = _state.XWingPosition.Value;
-
-        // Check if X-Wing is within viewport
-        if (xwingX < _state.CameraX - 2 || xwingX >= _state.CameraX + GameRenderer.ViewportTilesX + 2 ||
-            xwingY < _state.CameraY - 2 || xwingY >= _state.CameraY + GameRenderer.ViewportTilesY + 2)
-            return;
-
-        // X-Wing as 2x2 grid: 948, 949 on top row, 950, 951 on bottom row
-        _renderer.RenderSprite(948, xwingX, xwingY, _state.CameraX, _state.CameraY);
-        _renderer.RenderSprite(949, xwingX + 1, xwingY, _state.CameraX, _state.CameraY);
-        _renderer.RenderSprite(950, xwingX, xwingY + 1, _state.CameraX, _state.CameraY);
-        _renderer.RenderSprite(951, xwingX + 1, xwingY + 1, _state.CameraX, _state.CameraY);
     }
 
     private void RenderZoneItems()

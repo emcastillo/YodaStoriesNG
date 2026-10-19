@@ -276,6 +276,17 @@ public class OriginalWorldGenerator
                 requiredItem: _requiredItem, npc: _npc);
             _currentPuzzleIndex = -1;
         }
+
+        // Yoda Stories has two independent item strains that meet at the final Mission
+        // puzzle. Seed the second strain too; without this Find quest, its first puzzle
+        // can require an item that no earlier puzzle or zone ever provides.
+        if (!_singleStrain)
+        {
+            ErrorWhen(_strain2[0] == null, "Strain 2 has no first puzzle");
+            var firstPosition = FindPositionOfPuzzle(0);
+            ErrorWhen(firstPosition == null, "Could not locate the first puzzle in strain 2");
+            AddProvidedItemQuest(_strain2[0]!.Item1, Distance(firstPosition!.Value.x, firstPosition.Value.y));
+        }
     }
 
     private void DetermineBlockadeAndTownZones()
