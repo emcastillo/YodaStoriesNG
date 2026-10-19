@@ -12,7 +12,7 @@ class Program
 
         // Replay native landing/takeoff scripts through the engine without creating a window.
         if (args.Length >= 2 && args[0] == "--xwing-audit")
-            return GameEngine.AuditXWingTravel(args[1]);
+            return GameEngine.AuditXWingTravel(args[1], args.Contains("--smooth"));
 
         // Headless mission graph audit: generate worlds, compute item and zone reachability,
         // then write a Graphviz DOT graph. No renderer or SDL window is initialized.

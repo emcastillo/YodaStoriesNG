@@ -7,7 +7,7 @@ namespace YodaStoriesNG.Engine.Game;
 // and script paths. Initialize/Run/Render are never called: no SDL window is created.
 public unsafe partial class GameEngine
 {
-    public static int AuditXWingTravel(string dataFile)
+    public static int AuditXWingTravel(string dataFile, bool smooth = false)
     {
         var output = Console.Out;
         int failures = 0;
@@ -37,7 +37,7 @@ public unsafe partial class GameEngine
                 };
                 var engine = new GameEngine(Path.GetDirectoryName(dataFile)!)
                 {
-                    _gameData = data, _showingTitleScreen = false,
+                    _gameData = data, _showingTitleScreen = false, _smoothMovement = smooth, _smoothMovementRequested = smooth,
                     _worldGenerator = new WorldGenerator(data)
                 };
                 engine._worldGenerator.SetCurrentWorld(world);
@@ -55,7 +55,7 @@ public unsafe partial class GameEngine
                     engine._state.PlayerX = 6;
                     engine._state.PlayerY = 12;
                     if (shortcut) engine.TravelToPlanet();
-                    else engine.TryMovePlayer(0, -1, Direction.Up);
+                    else engine.AuditMovementStep(0, -1, Direction.Up);
                     engine.AwaitXWingLanding(route.Zone);
                     AssertXWingAudit(CountXWingTiles(data.Zones[93]) == 0, "departure left ship fragments on Dagobah");
 
@@ -70,9 +70,9 @@ public unsafe partial class GameEngine
                     if (shortcut) engine.TravelToPlanet();
                     else
                     {
-                        engine.TryMovePlayer(0, -1, Direction.Up);
+                        engine.AuditMovementStep(0, -1, Direction.Up);
                         if (route.Item1 != Planet.Desert)
-                            engine.TryMovePlayer(0, -1, Direction.Up);
+                            engine.AuditMovementStep(0, -1, Direction.Up);
                     }
                     engine.AwaitXWingLanding(93);
                     AssertXWingAudit(CountXWingTiles(data.Zones[route.Zone]) == 0, "departure left ship fragments on the planet");
@@ -92,11 +92,11 @@ public unsafe partial class GameEngine
                 Console.SetOut(output);
             }
         }
-        failures += AuditGeneratedXWingTravel(dataFile);
+        failures += AuditGeneratedXWingTravel(dataFile, smooth);
         return failures == 0 ? 0 : 1;
     }
 
-    private static int AuditGeneratedXWingTravel(string dataFile)
+    private static int AuditGeneratedXWingTravel(string dataFile, bool smooth)
     {
         var output = Console.Out;
         var previousSeed = Environment.GetEnvironmentVariable("YSNG_SEED");
@@ -119,7 +119,7 @@ public unsafe partial class GameEngine
                 context += $", {world.Planet}, mission item {world.Mission!.GoalPuzzle!.Item1}, final requirement {world.Mission.PuzzleChain[^1].RequiredItemId}";
                 var engine = new GameEngine(Path.GetDirectoryName(dataFile)!)
                 {
-                    _gameData = data, _showingTitleScreen = false, _worldGenerator = generator
+                    _gameData = data, _showingTitleScreen = false, _smoothMovement = smooth, _smoothMovementRequested = smooth, _worldGenerator = generator
                 };
                 engine._actionExecutor = new ActionExecutor(data, engine._state)
                 {
@@ -131,7 +131,7 @@ public unsafe partial class GameEngine
                 if (world.StartingItemId.HasValue) engine._state.AddItem(world.StartingItemId.Value);
                 engine._state.PlayerX = 6;
                 engine._state.PlayerY = 12;
-                engine.TryMovePlayer(0, -1, Direction.Up);
+                engine.AuditMovementStep(0, -1, Direction.Up);
                 if (world.Mission.GoalPuzzle.Item1 == 1788)
                 {
                     // This authored mission intercepts the flight and takes Luke to a
@@ -139,7 +139,7 @@ public unsafe partial class GameEngine
                     engine.AwaitXWingLanding(642, expectParkedShip: false);
                     engine._state.PlayerX = 3;
                     engine._state.PlayerY = 7;
-                    engine.TryMovePlayer(0, 1, Direction.Down);
+                    engine.AuditMovementStep(0, 1, Direction.Down);
                     engine.AwaitXWingLanding(world.LandingZoneId, expectParkedShip: false);
                 }
                 else
@@ -164,6 +164,13 @@ public unsafe partial class GameEngine
         if (expectedMissions == null || !expectedMissions.IsSubsetOf(coveredMissions))
             failures++;
         return failures;
+    }
+
+    private void AuditMovementStep(int dx, int dy, Direction facing)
+    {
+        TryMovePlayer(dx, dy, facing);
+        for (int tick = 0; tick < 180 && _playerStep != null; tick++) Update(TargetFrameTime);
+        AssertXWingAudit(_playerStep == null, "tile step did not finish before boarding");
     }
 
     private void AwaitXWingLanding(int zoneId, bool expectParkedShip = true)

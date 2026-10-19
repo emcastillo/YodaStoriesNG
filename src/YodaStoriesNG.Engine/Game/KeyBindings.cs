@@ -18,6 +18,8 @@ public class KeyBindings
     /// </summary>
     public bool HideMenuBar { get; set; }
 
+    public bool SmoothMovement { get; set; }
+
     // Action names (used as keys in the dictionary)
     public const string MoveUp = "MoveUp";
     public const string MoveDown = "MoveDown";

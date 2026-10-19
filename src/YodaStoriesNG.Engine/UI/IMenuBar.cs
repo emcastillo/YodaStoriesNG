@@ -27,6 +27,8 @@ public unsafe interface IMenuBar : IDisposable
     event Action? OnEnableBot;
     event Action? OnDisableBot;
     event Action<int>? OnSetScale;
+    event Action? OnToggleSmoothMovement;
+    bool SmoothMovement { get; set; }
     event Action? OnShowKeyboardControls;
     event Action? OnShowControllerControls;
     event Action? OnSelectDataFile;

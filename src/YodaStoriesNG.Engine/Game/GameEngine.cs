@@ -53,6 +53,9 @@ public unsafe partial class GameEngine : IDisposable
     private const double TargetFrameTime = 1.0 / 60.0; // 60 FPS
     private const double AnimationFrameTime = 0.15; // 150ms per animation frame
     private double _controllerMoveTimer = 0;  // Rate limit controller movement
+    private double _playerWalkingTimer;
+    private double _playerAnimationTimer;
+    private int _playerAnimationFrame;
 
     // Drag and drop state
     private bool _isDragging = false;
@@ -248,6 +251,7 @@ public unsafe partial class GameEngine : IDisposable
 
         // Initialize action executor
         _actionExecutor = new ActionExecutor(_gameData, _state);
+        _actionExecutor.OnHeroRelocated += CancelSmoothMovement;
 
         // Wire up action executor events (OnDialogue wired later, after init)
         _actionExecutor.OnMessage += (text) => _messages.ShowMessage(text, MessageType.Info);
@@ -269,6 +273,7 @@ public unsafe partial class GameEngine : IDisposable
         {
             var nativeMenuBar = new NativeMenuBar();
             nativeMenuBar.Initialize(_renderer.GetWindow());
+            nativeMenuBar.OnMenuActivity += () => { _discardMovementTime = true; _suppressHeldMovement = true; };
             _menuBar = nativeMenuBar;
         }
         else
@@ -291,6 +296,10 @@ public unsafe partial class GameEngine : IDisposable
         _menuBar.OnEnableBot += EnableBot;
         _menuBar.OnDisableBot += DisableBot;
         _menuBar.OnSetScale += SetGraphicsScale;
+        _movementBindings = KeyBindings.Load();
+        _smoothMovement = _smoothMovementRequested = _movementBindings.SmoothMovement;
+        _menuBar.SmoothMovement = _smoothMovementRequested;
+        _menuBar.OnToggleSmoothMovement += () => SetSmoothMovement(!_smoothMovementRequested);
         _menuBar.OnShowKeyboardControls += ShowKeyboardControls;
         _menuBar.OnShowControllerControls += ShowControllerControls;
         _menuBar.OnSelectDataFile += SelectDataFile;
@@ -317,6 +326,8 @@ public unsafe partial class GameEngine : IDisposable
                 KeepOpen: true),
             new(() => $"Graphics Scale: {_graphicsScale}x",
                 () => SetGraphicsScale(_graphicsScale switch { 1 => 2, 2 => 4, _ => 1 }), KeepOpen: true),
+            new(() => $"Smooth Movement: {(_smoothMovementRequested ? "On" : "Off")}",
+                () => SetSmoothMovement(!_smoothMovementRequested), KeepOpen: true),
             new(() => $"Sound: {(_sounds?.IsMuted == false ? "On" : "Off")}", () => _sounds?.ToggleMute(), KeepOpen: true),
             new(() => $"Mission Bot: {(IsBotRunning ? "On" : "Off")}",
                 () => { if (IsBotRunning) DisableBot(); else EnableBot(); }, KeepOpen: true),
@@ -440,6 +451,7 @@ public unsafe partial class GameEngine : IDisposable
 
             // Reset state
             _state.Reset();
+            ResetPlayerAnimation();
             _messages.Clear();
 
             // Create new world generator
@@ -667,6 +679,7 @@ public unsafe partial class GameEngine : IDisposable
     public void StartNewGame()
     {
         _state.Reset();
+        ResetPlayerAnimation();
         _messages.Clear();
 
         // Suppress dialogue during initialization
@@ -910,6 +923,7 @@ public unsafe partial class GameEngine : IDisposable
             return;
         }
 
+        CancelSmoothMovement();
         _state.CurrentZoneId = zoneId;
         _state.CurrentZone = zone;
         _actionExecutor?.ResetForZone();
@@ -1070,6 +1084,13 @@ public unsafe partial class GameEngine : IDisposable
             {
                 // Check if this is the main window being closed
                 uint mainWindowId = _renderer.GetWindowID();
+                if (evt.Window.WindowID == mainWindowId)
+                {
+                    if (evt.Window.Event == (byte)SDLWindowEventID.FocusLost)
+                    { _movementFocused = false; CancelSmoothMovement(); }
+                    else if (evt.Window.Event == (byte)SDLWindowEventID.FocusGained)
+                    { _movementFocused = true; _suppressHeldMovement = true; _discardMovementTime = true; }
+                }
                 if (evt.Window.WindowID == mainWindowId &&
                     evt.Window.Event == (byte)SDLWindowEventID.Close)
                 {
@@ -1172,6 +1193,9 @@ public unsafe partial class GameEngine : IDisposable
             {
 
                 case SDLEventType.Keydown:
+                    if (_smoothMovement && (IsSmoothMovementKey(evt.Key.Keysym.Sym) ||
+                        evt.Key.Keysym.Sym is (int)SDLKeyCode.Up or (int)SDLKeyCode.Down or (int)SDLKeyCode.Left or (int)SDLKeyCode.Right or
+                            (int)SDLKeyCode.W or (int)SDLKeyCode.A or (int)SDLKeyCode.S or (int)SDLKeyCode.D)) break;
                     HandleKeyDown(evt.Key.Keysym.Sym);
                     break;
 
@@ -1240,7 +1264,7 @@ public unsafe partial class GameEngine : IDisposable
         }
 
         // Handle analog stick movement (called every frame)
-        if (_controllerConnected && _controller != null && _controllerOverlay?.IsOpen != true)
+        if (!_smoothMovement && _controllerConnected && _controller != null && _controllerOverlay?.IsOpen != true)
         {
             HandleControllerAnalog();
         }
@@ -1273,6 +1297,7 @@ public unsafe partial class GameEngine : IDisposable
         const byte SDL_CONTROLLER_BUTTON_DPAD_LEFT = 13;
         const byte SDL_CONTROLLER_BUTTON_DPAD_RIGHT = 14;
 
+        if (_smoothMovement && button >= SDL_CONTROLLER_BUTTON_DPAD_UP && button <= SDL_CONTROLLER_BUTTON_DPAD_RIGHT) return;
         switch (button)
         {
             case SDL_CONTROLLER_BUTTON_A:
@@ -1896,6 +1921,11 @@ public unsafe partial class GameEngine : IDisposable
 
     private void TryMovePlayer(int dx, int dy, Direction direction, bool tryPull = false)
     {
+        if (_smoothMovement && !_committingSmoothStep)
+        {
+            RequestSmoothPlayerStep(dx, dy, direction, tryPull);
+            return;
+        }
         if (_actionExecutor?.IsBusy == true || !_state.HeroVisible)
             return;
 
@@ -1981,6 +2011,9 @@ public unsafe partial class GameEngine : IDisposable
             }
         }
 
+        // Reserved destinations cannot be entered while another actor is moving.
+        if (_smoothMovement && MovementReserved(newX, newY)) return;
+
         // Check collision with NPCs
         NPC? r2d2ToCollect = null;
         foreach (var npc in _state.ZoneNPCs)
@@ -2006,6 +2039,13 @@ public unsafe partial class GameEngine : IDisposable
         _state.PlayerX = newX;
         _state.PlayerY = newY;
 
+        if (_playerWalkingTimer <= 0)
+        {
+            _playerAnimationFrame = 0;
+            _playerAnimationTimer = 0;
+        }
+        _playerWalkingTimer = AnimationFrameTime * 3;
+
         // Collect R2D2 if we walked over it
         if (r2d2ToCollect != null)
         {
@@ -2021,11 +2061,13 @@ public unsafe partial class GameEngine : IDisposable
         // Update camera
         UpdateCamera();
 
+        var arrivalZone = _state.CurrentZone;
         // Execute walk actions
         _actionExecutor?.ExecuteZoneActions(ActionTrigger.Walk);
 
         // Check for zone objects at new position
         CheckZoneObjects();
+        if (!ReferenceEquals(arrivalZone, _state.CurrentZone)) return;
 
         // Check for Item tiles on layer 1 that can be picked up
         var objTile = _state.CurrentZone.GetTile(newX, newY, 1);
@@ -2532,6 +2574,8 @@ public unsafe partial class GameEngine : IDisposable
 
     private void UseItem()
     {
+        if (_smoothMovement && (MovementUIBlocked || _state.IsGameOver)) return;
+        if (_playerStep != null) { _pendingMovementAction = () => UseItem(); return; }
         // If dialogue is active, dismiss it
         if (_messages.HasDialogue)
         {
@@ -3125,6 +3169,8 @@ public unsafe partial class GameEngine : IDisposable
 
     private void PerformAttack()
     {
+        if (_smoothMovement && (MovementUIBlocked || _state.IsGameOver)) return;
+        if (_playerStep != null) { _pendingMovementAction = () => PerformAttack(); return; }
         if (_actionExecutor?.IsBusy == true || !_state.HeroVisible)
             return;
 
@@ -3326,7 +3372,9 @@ public unsafe partial class GameEngine : IDisposable
             bool inRange = false;
             foreach (var pos in attackPositions)
             {
-                if (npc.X == pos.X && npc.Y == pos.Y)
+                var position = NPCRenderPosition(npc);
+                if (_smoothMovement ? (int)Math.Floor(position.X + 0.5) == pos.X && (int)Math.Floor(position.Y + 0.5) == pos.Y
+                    : npc.X == pos.X && npc.Y == pos.Y)
                 {
                     inRange = true;
                     break;
@@ -3825,6 +3873,8 @@ public unsafe partial class GameEngine : IDisposable
     /// </summary>
     private void TravelToPlanet(ZoneObject? departureHotspot = null)
     {
+        if (_smoothMovement && (MovementUIBlocked || _state.IsGameOver)) return;
+        if (_playerStep != null) { _pendingMovementAction = () => TravelToPlanet(departureHotspot); return; }
         if (_worldGenerator?.CurrentWorld == null) return;
         if (_actionExecutor?.IsBusy == true) return;
 
@@ -3987,8 +4037,13 @@ public unsafe partial class GameEngine : IDisposable
             _renderer?.RefreshAnimatedTiles();
         }
 
-        if (_showingTitleScreen || _state.IsPaused)
+        if (_showingTitleScreen || _state.IsPaused || (_smoothMovement && MovementUIBlocked))
+        {
+            if (_smoothMovement) _suppressHeldMovement = true;
             return;
+        }
+        if (_discardMovementTime && _smoothMovement) { deltaTime = 0; _discardMovementTime = false; }
+        UpdateSmoothMovement(deltaTime);
 
         // Update animation
         _state.AnimationTimer += deltaTime;
@@ -4000,8 +4055,32 @@ public unsafe partial class GameEngine : IDisposable
             // Sync NPC animations
             foreach (var npc in _state.ZoneNPCs)
             {
-                npc.AnimationFrame = _state.AnimationFrame;
+                npc.AnimationFrame = !_smoothMovement || npc.Behavior == NPCBehavior.Animation
+                    ? _state.AnimationFrame
+                    : _npcSteps.TryGetValue(npc, out var step) ? (int)(step.Elapsed / AnimationFrameTime) % 3 : 0;
             }
+        }
+
+        if (_playerWalkingTimer > 0)
+        {
+            _playerWalkingTimer = Math.Max(0, _playerWalkingTimer - deltaTime);
+            _playerAnimationTimer += deltaTime;
+            while (_playerAnimationTimer >= AnimationFrameTime)
+            {
+                _playerAnimationTimer -= AnimationFrameTime;
+                _playerAnimationFrame = (_playerAnimationFrame + 1) % 3;
+            }
+
+            if (_playerWalkingTimer == 0)
+            {
+                _playerAnimationFrame = 0;
+                _playerAnimationTimer = 0;
+            }
+        }
+        else
+        {
+            _playerAnimationFrame = 0;
+            _playerAnimationTimer = 0;
         }
 
         // First script evaluation (before NPC/projectile updates)
@@ -4010,6 +4089,7 @@ public unsafe partial class GameEngine : IDisposable
             return;
         if (_actionExecutor?.IsBusy == true)
         {
+            if (_smoothMovement) CancelSmoothMovement();
             UpdateCamera();
             return;
         }
@@ -4027,6 +4107,7 @@ public unsafe partial class GameEngine : IDisposable
             return;
         if (_actionExecutor?.IsBusy == true)
         {
+            if (_smoothMovement) CancelSmoothMovement();
             UpdateCamera();
             return;
         }
@@ -4081,7 +4162,7 @@ public unsafe partial class GameEngine : IDisposable
             }
 
             // Hostile NPCs with ranged weapons try to shoot before moving
-            if (npc.IsHostile && npc.HasRangedAttack)
+            if (npc.IsHostile && npc.HasRangedAttack && (!_smoothMovement || !_npcSteps.ContainsKey(npc)))
             {
                 TryNPCRangedAttack(npc);
             }
@@ -4090,12 +4171,13 @@ public unsafe partial class GameEngine : IDisposable
             npc.MoveTimer += deltaTime;
 
             // Check if it's time to move
-            if (npc.MoveTimer < npc.MoveCooldown)
+            if (npc.MoveTimer < npc.MoveCooldown || _smoothMovement && _npcSteps.ContainsKey(npc))
                 continue;
 
             npc.MoveTimer = 0;
 
-            switch (npc.Behavior)
+            if (_smoothMovement) StartSmoothNPCStep(npc);
+            else switch (npc.Behavior)
             {
                 case NPCBehavior.Wandering:
                     UpdateWanderingNPC(npc);
@@ -4130,7 +4212,7 @@ public unsafe partial class GameEngine : IDisposable
                 if (npc.ActionTimer >= npc.AttackCooldown)
                 {
                     var dist = npc.DistanceTo(_state.PlayerX, _state.PlayerY);
-                    if (dist <= npc.AttackRange)
+                    if (dist <= npc.AttackRange && (!_smoothMovement || _playerStep == null && !_npcSteps.ContainsKey(npc)))
                     {
                         npc.ActionTimer = 0;
                         _state.Health -= npc.Damage;
@@ -4282,7 +4364,7 @@ public unsafe partial class GameEngine : IDisposable
             // Enemy projectiles check collision with hero
             if (projectile.IsActive && projectile.IsEnemyProjectile)
             {
-                if (tileX == _state.PlayerX && tileY == _state.PlayerY)
+                if (_smoothMovement ? ProjectileTouches(projectile, PlayerRenderPosition) : tileX == _state.PlayerX && tileY == _state.PlayerY)
                 {
                     _state.Health -= projectile.Damage;
                     _state.DamageFlashTimer = 1.0;
@@ -4300,7 +4382,7 @@ public unsafe partial class GameEngine : IDisposable
                     if (!npc.IsEnabled || !npc.IsAlive)
                         continue;
 
-                    if (npc.X == tileX && npc.Y == tileY)
+                    if (_smoothMovement ? ProjectileTouches(projectile, NPCRenderPosition(npc)) : npc.X == tileX && npc.Y == tileY)
                     {
                         // The Force stuns instead of dealing damage
                         if (projectile.Type == ProjectileType.Force)
@@ -4482,6 +4564,7 @@ public unsafe partial class GameEngine : IDisposable
             return false;
 
         // Check collision with player
+        if (_smoothMovement && MovementReserved(x, y, npc)) return false;
         if (x == _state.PlayerX && y == _state.PlayerY)
             return false;
 
@@ -4523,8 +4606,10 @@ public unsafe partial class GameEngine : IDisposable
         if (_state.CurrentZone == null)
             return;
 
+        var worldClip = new SDLRect { X = 0, Y = 0, W = GameRenderer.GameAreaWidth, H = GameRenderer.GameAreaHeight };
+        SDL.RenderSetClipRect(_renderer.GetRenderer(), &worldClip);
         // Render zone
-        _renderer.RenderZone(_state.CurrentZone, _state.CameraX, _state.CameraY);
+        _renderer.RenderZone(_state.CurrentZone, ViewCameraX, ViewCameraY);
 
         // Render zone items (crates, weapons on ground)
         RenderZoneItems();
@@ -4538,8 +4623,8 @@ public unsafe partial class GameEngine : IDisposable
         // Render attack animation if attacking
         if (_state.IsAttacking && _state.SelectedWeapon.HasValue)
         {
-            var playerScreenX = (_state.PlayerX - _state.CameraX) * Data.Tile.Width * GameRenderer.Scale;
-            var playerScreenY = (_state.PlayerY - _state.CameraY) * Data.Tile.Height * GameRenderer.Scale;
+            var playerScreenX = (int)((PlayerRenderPosition.X - ViewCameraX) * Data.Tile.Width * GameRenderer.Scale);
+            var playerScreenY = (int)((PlayerRenderPosition.Y - ViewCameraY) * Data.Tile.Height * GameRenderer.Scale);
             var direction = (int)_state.PlayerDirection;
             var progress = _state.AttackTimer / 0.3;  // Normalized progress
 
@@ -4560,8 +4645,8 @@ public unsafe partial class GameEngine : IDisposable
         else if (_state.IsAttacking)
         {
             // Unarmed attack
-            var playerScreenX = (_state.PlayerX - _state.CameraX) * Data.Tile.Width * GameRenderer.Scale;
-            var playerScreenY = (_state.PlayerY - _state.CameraY) * Data.Tile.Height * GameRenderer.Scale;
+            var playerScreenX = (int)((PlayerRenderPosition.X - ViewCameraX) * Data.Tile.Width * GameRenderer.Scale);
+            var playerScreenY = (int)((PlayerRenderPosition.Y - ViewCameraY) * Data.Tile.Height * GameRenderer.Scale);
             _renderer.RenderMeleeSlash(playerScreenX, playerScreenY, (int)_state.PlayerDirection, _state.AttackTimer / 0.3);
         }
 
@@ -4572,8 +4657,10 @@ public unsafe partial class GameEngine : IDisposable
         if (_scriptViewer?.IsOpen == true)
         {
             var highlights = _scriptViewer.GetHighlightsForZone(_state.CurrentZoneId);
-            _renderer.RenderHighlights(highlights, _state.CameraX, _state.CameraY);
+            _renderer.RenderHighlights(highlights, ViewCameraX, ViewCameraY);
         }
+
+        SDL.RenderSetClipRect(_renderer.GetRenderer(), null);
 
         // Render HUD with weapon ammo info
         int currentAmmo = -1, maxAmmo = -1;
@@ -4688,14 +4775,14 @@ public unsafe partial class GameEngine : IDisposable
                 continue;
 
             // Check if within viewport
-            if (obj.X < _state.CameraX || obj.X >= _state.CameraX + GameRenderer.ViewportTilesX ||
-                obj.Y < _state.CameraY || obj.Y >= _state.CameraY + GameRenderer.ViewportTilesY)
+            if (obj.X < ViewCameraX - 1 || obj.X >= ViewCameraX + GameRenderer.ViewportTilesX + 1 ||
+                obj.Y < ViewCameraY - 1 || obj.Y >= ViewCameraY + GameRenderer.ViewportTilesY + 1)
                 continue;
 
             // Render the item tile
             if (obj.Argument > 0 && obj.Argument < _gameData!.Tiles.Count)
             {
-                _renderer!.RenderSprite(obj.Argument, obj.X, obj.Y, _state.CameraX, _state.CameraY);
+                _renderer!.RenderSprite(obj.Argument, obj.X, obj.Y, ViewCameraX, ViewCameraY);
             }
         }
     }
@@ -4708,8 +4795,8 @@ public unsafe partial class GameEngine : IDisposable
                 continue;
 
             // Check if NPC is within viewport
-            if (npc.X < _state.CameraX || npc.X >= _state.CameraX + GameRenderer.ViewportTilesX ||
-                npc.Y < _state.CameraY || npc.Y >= _state.CameraY + GameRenderer.ViewportTilesY)
+            if (npc.X < ViewCameraX - 1 || npc.X >= ViewCameraX + GameRenderer.ViewportTilesX + 1 ||
+                npc.Y < ViewCameraY - 1 || npc.Y >= ViewCameraY + GameRenderer.ViewportTilesY + 1)
                 continue;
 
             // If CharacterId is a valid character, use character animation frames
@@ -4732,34 +4819,16 @@ public unsafe partial class GameEngine : IDisposable
                     var tileId = GetUsableAnimationFrame(frames, npc.AnimationFrame);
                     if (tileId.HasValue)
                     {
-                        _renderer!.RenderSprite(tileId.Value, npc.X, npc.Y, _state.CameraX, _state.CameraY);
+                        _renderer!.RenderSprite(tileId.Value, NPCRenderPosition(npc).X, NPCRenderPosition(npc).Y, ViewCameraX, ViewCameraY);
                     }
                 }
             }
             // If CharacterId is actually a tile ID (>= character count), render that tile directly
             else if (npc.CharacterId < _gameData!.Tiles.Count)
             {
-                _renderer!.RenderSprite(npc.CharacterId, npc.X, npc.Y, _state.CameraX, _state.CameraY);
+                _renderer!.RenderSprite(npc.CharacterId, NPCRenderPosition(npc).X, NPCRenderPosition(npc).Y, ViewCameraX, ViewCameraY);
             }
         }
-    }
-
-    // Some CHAR records leave unused animation slots as tile 0 or 0xFFFF. Selecting
-    // those slots makes a moving character disappear for that animation frame.
-    private ushort? GetUsableAnimationFrame(ushort[] frames, int preferredFrame)
-    {
-        if (_gameData == null || frames.Length == 0)
-            return null;
-
-        preferredFrame = Math.Clamp(preferredFrame, 0, frames.Length - 1);
-        for (int offset = 0; offset < frames.Length; offset++)
-        {
-            var tileId = frames[(preferredFrame + offset) % frames.Length];
-            if (tileId > 0 && tileId < _gameData.Tiles.Count)
-                return tileId;
-        }
-
-        return null;
     }
 
     private void RenderProjectiles()
@@ -4772,13 +4841,13 @@ public unsafe partial class GameEngine : IDisposable
             var (tileX, tileY) = projectile.TilePosition;
 
             // Check if within viewport
-            if (tileX < _state.CameraX || tileX >= _state.CameraX + GameRenderer.ViewportTilesX ||
-                tileY < _state.CameraY || tileY >= _state.CameraY + GameRenderer.ViewportTilesY)
+            if (tileX < ViewCameraX - 1 || tileX >= ViewCameraX + GameRenderer.ViewportTilesX + 1 ||
+                tileY < ViewCameraY - 1 || tileY >= ViewCameraY + GameRenderer.ViewportTilesY + 1)
                 continue;
 
             // Render projectile
-            var screenX = (int)((projectile.X - _state.CameraX) * Data.Tile.Width * GameRenderer.Scale);
-            var screenY = (int)((projectile.Y - _state.CameraY) * Data.Tile.Height * GameRenderer.Scale);
+            var screenX = (int)((projectile.X - ViewCameraX) * Data.Tile.Width * GameRenderer.Scale);
+            var screenY = (int)((projectile.Y - ViewCameraY) * Data.Tile.Height * GameRenderer.Scale);
             _renderer!.RenderProjectile(screenX, screenY, projectile.Type);
         }
     }
@@ -4821,13 +4890,12 @@ public unsafe partial class GameEngine : IDisposable
                 _ => heroChar.Frames.WalkDown
             };
 
-            if (frames != null && frames.Length > 0 && frames[0] != 0)
+            if (frames != null && frames.Length > 0)
             {
-                var frameIndex = Math.Min(_state.AnimationFrame, frames.Length - 1);
-                var tileId = frames[frameIndex];
-                if (tileId < _gameData.Tiles.Count)
+                var tileId = GetUsableAnimationFrame(frames, _playerAnimationFrame);
+                if (tileId.HasValue)
                 {
-                    _renderer!.RenderSprite(tileId, _state.PlayerX, _state.PlayerY, _state.CameraX, _state.CameraY);
+                    _renderer!.RenderSprite(tileId.Value, PlayerRenderPosition.X, PlayerRenderPosition.Y, ViewCameraX, ViewCameraY);
                     return;
                 }
             }
@@ -4836,8 +4904,33 @@ public unsafe partial class GameEngine : IDisposable
         // Fallback: render a placeholder tile
         if (_gameData.Tiles.Count > 800)
         {
-            _renderer!.RenderSprite(800, _state.PlayerX, _state.PlayerY, _state.CameraX, _state.CameraY);
+            _renderer!.RenderSprite(800, PlayerRenderPosition.X, PlayerRenderPosition.Y, ViewCameraX, ViewCameraY);
         }
+    }
+
+    // Some CHAR records leave unused animation slots as tile 0 or 0xFFFF. Picking
+    // those slots caused the character to disappear on every second/third step.
+    private ushort? GetUsableAnimationFrame(ushort[] frames, int preferredFrame)
+    {
+        if (_gameData == null || frames.Length == 0)
+            return null;
+
+        preferredFrame = Math.Clamp(preferredFrame, 0, frames.Length - 1);
+        for (int offset = 0; offset < frames.Length; offset++)
+        {
+            var tileId = frames[(preferredFrame + offset) % frames.Length];
+            if (tileId > 0 && tileId < _gameData.Tiles.Count)
+                return tileId;
+        }
+
+        return null;
+    }
+
+    private void ResetPlayerAnimation()
+    {
+        _playerWalkingTimer = 0;
+        _playerAnimationTimer = 0;
+        _playerAnimationFrame = 0;
     }
 
     /// <summary>

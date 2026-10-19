@@ -36,6 +36,7 @@ public static class SelfTest
         failures += Check("hotspot toggles preserve map tiles", HotspotTogglesPreserveTiles);
         failures += Check("scripted travel requests a complete zone load", ScriptedTravelRequestsLoad);
         failures += Check("mission identity and script variables agree with their readers", MissionScriptState);
+        failures += Check("smooth movement, reservations, arrivals and settings", GameEngine.TestSmoothMovement);
 
         Console.WriteLine(failures == 0 ? "\nSelf-test PASSED" : $"\nSelf-test FAILED ({failures})");
         return failures == 0 ? 0 : 1;
@@ -295,6 +296,17 @@ public static class SelfTest
 
         Assert(loaded, "Enter did not run Load Game");
         Assert(!menu.IsMenuOpen, "menu stayed open after Enter");
+        menu.OnToggleSmoothMovement += () => menu.SmoothMovement = !menu.SmoothMovement;
+        foreach (var key in new[] { Hexa.NET.SDL2.SDLKeyCode.F10,
+            Hexa.NET.SDL2.SDLKeyCode.Right, Hexa.NET.SDL2.SDLKeyCode.Right,
+            Hexa.NET.SDL2.SDLKeyCode.Down, Hexa.NET.SDL2.SDLKeyCode.Down,
+            Hexa.NET.SDL2.SDLKeyCode.Down, Hexa.NET.SDL2.SDLKeyCode.Return })
+        {
+            var evt = new Hexa.NET.SDL2.SDLEvent { Type = (uint)Hexa.NET.SDL2.SDLEventType.Keydown };
+            evt.Key.Keysym.Sym = (int)key;
+            Assert(menu.HandleEvent(&evt), $"{key} was not consumed in Config");
+        }
+        Assert(menu.SmoothMovement, "Config did not toggle Smooth Movement");
     }
 
     /// <summary>

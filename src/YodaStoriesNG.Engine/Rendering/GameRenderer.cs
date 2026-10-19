@@ -471,7 +471,7 @@ public unsafe class GameRenderer : IDisposable
     /// <summary>
     /// Renders a zone at the specified camera offset.
     /// </summary>
-    public void RenderZone(Zone zone, int cameraX, int cameraY)
+    public void RenderZone(Zone zone, double cameraX, double cameraY)
     {
         // Clear screen
         SDL.SetRenderDrawColor(_renderer, 0, 0, 0, 255);
@@ -485,14 +485,14 @@ public unsafe class GameRenderer : IDisposable
 
     }
 
-    private void RenderTileLayer(Zone zone, int layer, int cameraX, int cameraY)
+    private void RenderTileLayer(Zone zone, int layer, double cameraX, double cameraY)
     {
-        for (int screenY = 0; screenY < ViewportTilesY; screenY++)
+        for (int screenY = 0; screenY <= ViewportTilesY; screenY++)
         {
-            for (int screenX = 0; screenX < ViewportTilesX; screenX++)
+            for (int screenX = 0; screenX <= ViewportTilesX; screenX++)
             {
-                var worldX = cameraX + screenX;
-                var worldY = cameraY + screenY;
+                var worldX = (int)Math.Floor(cameraX) + screenX;
+                var worldY = (int)Math.Floor(cameraY) + screenY;
 
                 if (worldX < 0 || worldX >= zone.Width || worldY < 0 || worldY >= zone.Height)
                     continue;
@@ -507,8 +507,8 @@ public unsafe class GameRenderer : IDisposable
                 if (layer > 0 && !tile.IsTransparent && tile.PixelData[0] == 0)
                     continue;
 
-                var screenPosX = screenX * Tile.Width * Scale;
-                var screenPosY = screenY * Tile.Height * Scale;
+                var screenPosX = (worldX - cameraX) * Tile.Width * Scale;
+                var screenPosY = (worldY - cameraY) * Tile.Height * Scale;
                 RenderTile(tileId, screenPosX, screenPosY);
             }
         }
@@ -517,7 +517,7 @@ public unsafe class GameRenderer : IDisposable
     /// <summary>
     /// Renders a single tile at the specified screen position.
     /// </summary>
-    public void RenderTile(int tileId, int x, int y)
+    public void RenderTile(int tileId, double x, double y)
     {
         if (_tileAtlas == null || tileId < 0 || tileId >= _gameData.Tiles.Count)
             return;
@@ -534,21 +534,21 @@ public unsafe class GameRenderer : IDisposable
             H = Tile.Height
         };
 
-        var dstRect = new SDLRect
+        var dstRect = new SDLFRect
         {
-            X = x,
-            Y = y,
+            X = (float)x,
+            Y = (float)y,
             W = Tile.Width * Scale,
             H = Tile.Height * Scale
         };
 
-        SDL.RenderCopy(_renderer, _tileAtlas, &srcRect, &dstRect);
+        SDL.RenderCopyF(_renderer, _tileAtlas, &srcRect, &dstRect);
     }
 
     /// <summary>
     /// Renders a sprite (character/object) at the specified world position.
     /// </summary>
-    public void RenderSprite(int tileId, int worldX, int worldY, int cameraX, int cameraY)
+    public void RenderSprite(int tileId, double worldX, double worldY, double cameraX, double cameraY)
     {
         var screenX = (worldX - cameraX) * Tile.Width * Scale;
         var screenY = (worldY - cameraY) * Tile.Height * Scale;
@@ -855,7 +855,7 @@ public unsafe class GameRenderer : IDisposable
     /// Renders highlight boxes at specified world positions.
     /// Used by the script viewer to show referenced positions.
     /// </summary>
-    public void RenderHighlights(IReadOnlyList<UI.ScriptHighlight> highlights, int cameraX, int cameraY)
+    public void RenderHighlights(IReadOnlyList<UI.ScriptHighlight> highlights, double cameraX, double cameraY)
     {
         if (highlights.Count == 0) return;
 
@@ -868,8 +868,8 @@ public unsafe class GameRenderer : IDisposable
                 h.Y < cameraY || h.Y >= cameraY + ViewportTilesY)
                 continue;
 
-            var screenX = (h.X - cameraX) * Tile.Width * Scale;
-            var screenY = (h.Y - cameraY) * Tile.Height * Scale;
+            var screenX = (int)((h.X - cameraX) * Tile.Width * Scale);
+            var screenY = (int)((h.Y - cameraY) * Tile.Height * Scale);
             var size = Tile.Width * Scale;
 
             // Color based on highlight type
