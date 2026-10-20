@@ -2050,7 +2050,7 @@ public unsafe partial class GameEngine : IDisposable
                     return;
                 }
             }
-            else if (tile.IsSolid)
+            else if (tile.IsSolid && !IsNPCMapSprite(newX, newY, middleTile))
             {
                 // Collision - trigger bump action
                 BumpInto(newX, newY);
@@ -4534,6 +4534,8 @@ public unsafe partial class GameEngine : IDisposable
     /// </summary>
     private void HandleNPCDeath(NPC npc)
     {
+        // Release a defeated actor's reservations immediately, including mid-step deaths.
+        _npcSteps.Remove(npc);
         var npcName = GetCharacterName(npc.CharacterId) ?? "Target";
         _messages.ShowCombat($"{npcName} defeated!");
 
@@ -4689,7 +4691,7 @@ public unsafe partial class GameEngine : IDisposable
         if (middleTile != 0xFFFF && middleTile < _gameData!.Tiles.Count)
         {
             var tile = _gameData.Tiles[middleTile];
-            if (tile.IsSolid && !tile.IsDraggable)
+            if (tile.IsSolid && !tile.IsDraggable && !IsNPCMapSprite(x, y, middleTile))
                 return false;
         }
 
@@ -4718,7 +4720,7 @@ public unsafe partial class GameEngine : IDisposable
         var worldClip = new SDLRect { X = 0, Y = 0, W = GameRenderer.GameAreaWidth, H = GameRenderer.GameAreaHeight };
         SDL.RenderSetClipRect(_renderer.GetRenderer(), &worldClip);
         // Render zone
-        _renderer.RenderZone(_state.CurrentZone, ViewCameraX, ViewCameraY);
+        _renderer.RenderZone(_state.CurrentZone, ViewCameraX, ViewCameraY, IsNPCMapSprite);
 
         // Render zone items (crates, weapons on ground)
         RenderZoneItems();
@@ -4743,7 +4745,7 @@ public unsafe partial class GameEngine : IDisposable
         RenderProjectiles();
 
         // Upper scenery occludes actors and effects beneath it.
-        _renderer.RenderZoneRoof(_state.CurrentZone, ViewCameraX, ViewCameraY);
+        _renderer.RenderZoneRoof(_state.CurrentZone, ViewCameraX, ViewCameraY, IsNPCMapSprite);
 
         // Render script viewer highlights (if viewing current zone)
         if (_scriptViewer?.IsOpen == true)
@@ -4877,6 +4879,21 @@ public unsafe partial class GameEngine : IDisposable
                 _renderer!.RenderSprite(obj.Argument, obj.X, obj.Y, ViewCameraX, ViewCameraY);
             }
         }
+    }
+
+    private bool IsNPCMapSprite(int x, int y, ushort tile)
+    {
+        // Keep authored tiles available to scripts. Only suppress a matching sprite at
+        // its IZAX spawn point; the live NPC renderer owns movement, visibility and death.
+        foreach (var entity in _state.CurrentZone!.Monsters)
+        {
+            if (entity.X != x || entity.Y != y || entity.CharacterId >= _gameData!.Characters.Count)
+                continue;
+            var frames = _gameData.Characters[entity.CharacterId].Frames;
+            if (frames.WalkUp.Contains(tile) || frames.WalkDown.Contains(tile) ||
+                frames.WalkLeft.Contains(tile) || frames.WalkRight.Contains(tile)) return true;
+        }
+        return false;
     }
 
     private void RenderNPCs()
@@ -5302,7 +5319,8 @@ public unsafe partial class GameEngine : IDisposable
         if (zone == null || x < 0 || y < 0 || x >= zone.Width || y >= zone.Height) return false;
         if (IsGroundBlocked(zone, x, y)) return false;
         var t = zone.GetTile(x, y, 1);
-        if (t != 0xFFFF && (t >= _gameData!.Tiles.Count || _gameData.Tiles[t].IsSolid)) return false;
+        if (t != 0xFFFF && (t >= _gameData!.Tiles.Count ||
+            _gameData.Tiles[t].IsSolid && !IsNPCMapSprite(x, y, t))) return false;
         return !_state.ZoneNPCs.Any(n => n.IsEnabled && n.IsAlive && n.X == x && n.Y == y);
     }
 

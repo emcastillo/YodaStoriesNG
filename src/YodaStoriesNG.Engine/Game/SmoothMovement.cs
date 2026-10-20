@@ -95,7 +95,8 @@ public unsafe partial class GameEngine
         if (_state.ZoneNPCs.Any(n => n != actor && n.IsEnabled && n.IsAlive && n.X == x && n.Y == y &&
             !(collect && n.IsReadyToCollect && IsR2D2Character(n.CharacterId)))) return false;
         int tile = zone.GetTile(x, y, 1);
-        return tile == ushort.MaxValue || tile >= _gameData!.Tiles.Count || !_gameData.Tiles[tile].IsObject;
+        return tile == ushort.MaxValue || tile >= _gameData!.Tiles.Count ||
+            !_gameData.Tiles[tile].IsSolid || IsNPCMapSprite(x, y, (ushort)tile);
     }
 
     private bool IsCardinalInteraction(int x, int y) => _sectorPuzzles?.IsBumpTarget(x, y) == true || _state.CurrentZone!.Objects.Any(o => o.Enabled && o.X == x && o.Y == y &&

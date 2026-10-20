@@ -471,7 +471,7 @@ public unsafe class GameRenderer : IDisposable
     /// <summary>
     /// Renders a zone at the specified camera offset.
     /// </summary>
-    public void RenderZone(Zone zone, double cameraX, double cameraY)
+    public void RenderZone(Zone zone, double cameraX, double cameraY, Func<int, int, ushort, bool>? isActorTile = null)
     {
         // Clear screen
         SDL.SetRenderDrawColor(_renderer, 0, 0, 0, 255);
@@ -480,15 +480,15 @@ public unsafe class GameRenderer : IDisposable
         // Roofs are drawn after actors so walking underneath does not put the hero on top.
         for (int layer = 0; layer < 2; layer++)
         {
-            RenderTileLayer(zone, layer, cameraX, cameraY);
+            RenderTileLayer(zone, layer, cameraX, cameraY, isActorTile);
         }
 
     }
 
-    public void RenderZoneRoof(Zone zone, double cameraX, double cameraY) =>
-        RenderTileLayer(zone, 2, cameraX, cameraY);
+    public void RenderZoneRoof(Zone zone, double cameraX, double cameraY, Func<int, int, ushort, bool>? isActorTile = null) =>
+        RenderTileLayer(zone, 2, cameraX, cameraY, isActorTile);
 
-    private void RenderTileLayer(Zone zone, int layer, double cameraX, double cameraY)
+    private void RenderTileLayer(Zone zone, int layer, double cameraX, double cameraY, Func<int, int, ushort, bool>? isActorTile)
     {
         for (int screenY = 0; screenY <= ViewportTilesY; screenY++)
         {
@@ -502,6 +502,10 @@ public unsafe class GameRenderer : IDisposable
 
                 var tileId = zone.GetTile(worldX, worldY, layer);
                 if (tileId == 0xFFFF || tileId >= _gameData.Tiles.Count)
+                    continue;
+
+                // IZAX actors own their sprites; their map placeholders must not remain as ghosts.
+                if (layer > 0 && isActorTile?.Invoke(worldX, worldY, tileId) == true)
                     continue;
 
                 var tile = _gameData.Tiles[(int)tileId];
