@@ -33,7 +33,9 @@ public partial class MissionSolver
         _sameObjectiveCount = key == _lastObjective ? _sameObjectiveCount + 1 : 0;
         _lastObjective = key;
 
-        if (HuntEnemies && FindNearestEnemy() is { } blocker)
+        // (Only one we can get at: from a sealed pocket every monster outside is out of reach,
+        // and chasing them kept the bot from trying the trapdoor out.)
+        if (HuntEnemies && FindNearestEnemy() is { } blocker && CanGetAt(blocker.X, blocker.Y))
             return new BotObjective
             {
                 Type = ObjectiveType.KillEnemy, Description = $"Clear {GetNpcName(blocker)} out of the way",
@@ -54,15 +56,18 @@ public partial class MissionSolver
         if (HuntEnemies && Unjam(objective) is { } unjam)
         {
             _sameObjectiveCount = 0;
+            // Moving blocks can uncover a switch that was tried while it was buried.
+            _triedSwitches.RemoveWhere(t => t.zone == _state.CurrentZoneId);
             return unjam;
         }
         return objective;
     }
 
     /// <summary>
-    /// Greedy block-shifting: try every push and pull of a block next to where the hero can
-    /// walk, and pick the one that most enlarges that area - or reaches a switch. Repeated,
-    /// it pulls boulders out of a row one at a time. Not a Sokoban solver; it will not undo.
+    /// The blocks are in the way (a row of boulders over a pressure plate, crates in a
+    /// corridor): search pushes and pulls breadth-first for the shortest sequence that lets
+    /// the hero reach a goal - a floor switch, or whatever the stuck objective wanted - and
+    /// return its first move. Called again after each move, so the plan follows the room.
     /// </summary>
     private BotObjective? Unjam(BotObjective stuckOn)
     {
@@ -73,106 +78,52 @@ public partial class MissionSolver
             for (int x = 0; x < zone.Width; x++)
                 grid[x, y] = zone.GetTile(x, y, 1);
 
-        bool Solid(ushort t) => t != 0xFFFF && (t >= _gameData.Tiles.Count || _gameData.Tiles[t].IsObject);
-        bool Block(ushort t) => t != 0xFFFF && t < _gameData.Tiles.Count && _gameData.Tiles[t].IsDraggable;
-        bool In(int x, int y) => x >= 0 && y >= 0 && x < zone.Width && y < zone.Height;
-
-        HashSet<(int, int)> Reach(ushort[,] g, int hx, int hy)
-        {
-            var seen = new HashSet<(int, int)> { (hx, hy) };
-            var q = new Queue<(int, int)>(seen);
-            while (q.Count > 0)
-            {
-                var (x, y) = q.Dequeue();
-                foreach (var (dx, dy) in new[] { (1, 0), (-1, 0), (0, 1), (0, -1) })
-                    if (In(x + dx, y + dy) && !Solid(g[x + dx, y + dy]) && seen.Add((x + dx, y + dy)))
-                        q.Enqueue((x + dx, y + dy));
-            }
-            return seen;
-        }
-
-        var here = Reach(grid, _state.PlayerX, _state.PlayerY);
+        // Only switches whose tile is really there: rooms roll which of several trapdoors exists.
         var switches = zone.Actions.SelectMany(a => a.Conditions)
-            .Where(c => c.Opcode == ConditionOpcode.StandingOn && c.Arguments.Count >= 3)
-            .Select(c => ((int)c.Arguments[0], (int)c.Arguments[1])).ToHashSet();
-        // Aim at untried floor switches, and at whatever the stuck objective wanted to reach -
+            .Where(c => c.Opcode == ConditionOpcode.StandingOn && c.Arguments.Count >= 3 &&
+                        zone.GetTile(c.Arguments[0], c.Arguments[1], 0) == c.Arguments[2])
+            .Select(c => ((int)c.Arguments[0], (int)c.Arguments[1]));
+        // Aim at the floor switches, and at whatever the stuck objective wanted to reach -
         // its square, or a square beside it when the thing itself is used or talked to.
         var targets = new List<(int, int)>(switches);
         if (stuckOn.Type is ObjectiveType.UseItemOnNpc or ObjectiveType.TalkToNpc)
             targets.AddRange(new[] { (1, 0), (-1, 0), (0, 1), (0, -1) }.Select(o => (stuckOn.TargetX + o.Item1, stuckOn.TargetY + o.Item2)));
         else if (stuckOn.Type is ObjectiveType.EnterDoor or ObjectiveType.PickupItem or ObjectiveType.WalkToPosition)
             targets.Add((stuckOn.TargetX, stuckOn.TargetY));
-        var goals = targets.Where(g => In(g.Item1, g.Item2) && !here.Contains(g)).ToList();
 
-        // How many blocks stand between the walkable area and the nearest goal (0-1 BFS:
-        // stepping onto a block costs one, open floor nothing, walls are walls).
-        int BlocksInTheWay(ushort[,] g, HashSet<(int, int)> reach)
+        var move = BlockPuzzle.FirstMove(grid, t => t < _gameData.Tiles.Count && _gameData.Tiles[t].IsDraggable,
+            t => t >= _gameData.Tiles.Count || _gameData.Tiles[t].IsSolid,
+            (_state.PlayerX, _state.PlayerY), targets.ToHashSet());
+        if (move is not { } m) return null;
+        return new BotObjective
         {
-            if (goals.Count == 0) return 0;
-            var cost = new Dictionary<(int, int), int>();
-            var dq = new LinkedList<(int, int)>();
-            foreach (var cell in reach) { cost[cell] = 0; dq.AddLast(cell); }
-            while (dq.Count > 0)
-            {
-                var (x, y) = dq.First!.Value;
-                dq.RemoveFirst();
-                if (goals.Contains((x, y))) return cost[(x, y)];
-                foreach (var (dx, dy) in new[] { (1, 0), (-1, 0), (0, 1), (0, -1) })
-                {
-                    int nx = x + dx, ny = y + dy;
-                    if (!In(nx, ny)) continue;
-                    var t = g[nx, ny];
-                    bool block = Block(t);
-                    if (Solid(t) && !block) continue;
-                    int c = cost[(x, y)] + (block ? 1 : 0);
-                    if (cost.TryGetValue((nx, ny), out var old) && old <= c) continue;
-                    cost[(nx, ny)] = c;
-                    if (block) dq.AddLast((nx, ny)); else dq.AddFirst((nx, ny));
-                }
-            }
-            return 99;
-        }
+            Type = m.Pull ? ObjectiveType.PullObject : ObjectiveType.PushObject,
+            Description = $"{(m.Pull ? "Pull" : "Push")} a block out of the way",
+            TargetX = m.X, TargetY = m.Y,
+            Direction = (m.Dx, m.Dy) switch { (0, -1) => Direction.Up, (0, 1) => Direction.Down, (-1, 0) => Direction.Left, _ => Direction.Right },
+        };
+    }
 
-        int Score(ushort[,] g, HashSet<(int, int)> reach) =>
-            -1000 * BlocksInTheWay(g, reach) + reach.Count + (goals.Any(reach.Contains) ? 100000 : 0);
-
-        BotObjective? best = null;
-        int bestScore = Score(grid, here);
-        var dirs = new[] { (Direction.Up, 0, -1), (Direction.Down, 0, 1), (Direction.Left, -1, 0), (Direction.Right, 1, 0) };
-        for (int by = 0; by < zone.Height; by++)
-            for (int bx = 0; bx < zone.Width; bx++)
-            {
-                if (!Block(grid[bx, by]) || _unreachablePositions.Contains((_state.CurrentZoneId, bx, by))) continue;
-                foreach (var (dir, dx, dy) in dirs)
-                {
-                    // Push: hero behind (bx-dx, by-dy), block lands on (bx+dx, by+dy), hero ends on (bx, by).
-                    if (here.Contains((bx - dx, by - dy)) && In(bx + dx, by + dy) && !Solid(grid[bx + dx, by + dy]))
-                        Consider(bx, by, bx + dx, by + dy, bx, by, ObjectiveType.PushObject, dir);
-                    // Pull: hero on (bx+dx, by+dy), steps to (bx+2dx, by+2dy), block follows onto (bx+dx, by+dy).
-                    if (here.Contains((bx + dx, by + dy)) && In(bx + 2 * dx, by + 2 * dy) && !Solid(grid[bx + 2 * dx, by + 2 * dy]))
-                        Consider(bx, by, bx + dx, by + dy, bx + 2 * dx, by + 2 * dy, ObjectiveType.PullObject, dir);
-                }
-            }
-        return best;
-
-        void Consider(int fromX, int fromY, int toX, int toY, int heroX, int heroY, ObjectiveType type, Direction dir)
-        {
-            var g = (ushort[,])grid.Clone();
-            g[toX, toY] = g[fromX, fromY];
-            g[fromX, fromY] = 0xFFFF;
-            var after = Reach(g, heroX, heroY);
-            int score = Score(g, after);
-            if (score <= bestScore) return;
-            bestScore = score;
-            best = new BotObjective
-            {
-                Type = type, Description = $"{(type == ObjectiveType.PullObject ? "Pull" : "Push")} a block out of the way",
-                TargetX = fromX, TargetY = fromY, Direction = dir,
-            };
-        }
+    public bool CanGetAt(int x, int y)
+    {
+        var reach = ReachableWithoutPushing(_state.CurrentZone!);
+        for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++)
+                if (reach.Contains((x + dx, y + dy))) return true;
+        return false;
     }
 
     private readonly HashSet<(int zone, int x, int y)> _triedSwitches = new();
+
+    private HashSet<(int x, int y)> ReachableWithoutPushing(Zone zone)
+    {
+        var grid = new ushort[zone.Width, zone.Height];
+        for (int y = 0; y < zone.Height; y++)
+            for (int x = 0; x < zone.Width; x++)
+                grid[x, y] = zone.GetTile(x, y, 1);
+        return BlockPuzzle.Reach(grid, t => t < _gameData.Tiles.Count && _gameData.Tiles[t].IsDraggable,
+            t => t >= _gameData.Tiles.Count || _gameData.Tiles[t].IsSolid, (_state.PlayerX, _state.PlayerY));
+    }
 
     /// <summary>A StandingOn trigger in this zone whose tile is actually there now.</summary>
     private (int x, int y)? UntriedSwitch()
@@ -184,8 +135,10 @@ public partial class MissionSolver
             if (c.Opcode != ConditionOpcode.StandingOn || c.Arguments.Count < 3) continue;
             int x = c.Arguments[0], y = c.Arguments[1], t = c.Arguments[2];
             if (_triedSwitches.Contains((_state.CurrentZoneId, x, y))) continue;
-            // Walkable now: the floor is the switch tile and nothing stands on it.
-            if (zone.GetTile(x, y, 0) == t && zone.GetTile(x, y, 1) == 0xFFFF)
+            // Walkable now: the floor is the switch tile, nothing stands on it, and the hero
+            // can get there without shoving a block (which is how switches get buried again).
+            if (zone.GetTile(x, y, 0) == t && zone.GetTile(x, y, 1) == 0xFFFF &&
+                ReachableWithoutPushing(zone).Contains((x, y)))
                 return (x, y);
         }
         return null;
@@ -218,9 +171,16 @@ public partial class MissionSolver
             };
 
         if (world.Mission?.CurrentPuzzleStep is not { ZoneId: { } stepZone } step)
-            return null;
+            return _state.IsGameWon ? null : FinishGame(world);
 
         int item = step.RequiredItemId;
+
+        // In the step's rooms, bump whatever a script answers with more than words - the
+        // barrier that brings Van Loon over, the cage, Pacal himself (who wins the game).
+        // (The goal only: elsewhere townsfolk's hint scripts would be bumped for ever.)
+        if (world.Sectors.TryGetValue(stepZone, out var goal) && goal.Type == ZoneType.Goal &&
+            ZoneAndRooms(stepZone).Contains(_state.CurrentZoneId) && UsefulBump() is { } bump)
+            return bump;
         // Not in hand yet: the last puzzle put it somewhere (an Offer's drop spot, maybe in
         // another room) - go and get it.
         if (item > 0 && !_state.HasItem(item))
@@ -231,6 +191,17 @@ public partial class MissionSolver
 
         if (_state.CurrentZoneId != spot.zone)
         {
+            // Standing in a blockade that faces the way we are going (the stuck Olmec head):
+            // the grid says walk on, the head says otherwise.
+            // Kept until solved: its item is often fetched from the next zone, where the grid
+            // would otherwise send the bot straight back.
+            if (world.Sectors.TryGetValue(_state.CurrentZoneId, out var block) && block.Zone == _state.CurrentZoneId &&
+                !block.Solved && block.RequiredItem >= 0 && Faces(world, block, stepZone))
+                _clearing = block;
+            if (_clearing is { Solved: false } gate && ClearGate(world, gate) is { } clear)
+                return clear;
+            _clearing = null;
+
             // Not on the grid from here - an island, or behind a blockade: clear that first.
             if (!ZoneAndRooms(stepZone).Contains(_state.CurrentZoneId) && !CanReach(world, stepZone))
             {
@@ -280,7 +251,13 @@ public partial class MissionSolver
                     if (placed == null) continue;
                     var a = placed.Arguments;
                     if (!(a[4] == item || a[4] == -1 && sector?.RequiredItem == item)) continue;
-                    if (zone.GetTile(a[0], a[1], a[2]) != a[3]) continue;
+                    // The tile it is used on may only appear on the first visit (Van Loon walks
+                    // in when you do): trust an unvisited room, check a visited one.
+                    // (In the goal's rooms, also whoever is in the room but not in place yet -
+                    // Van Loon walks over when you bump the barrier. Not elsewhere: a ledge
+                    // room's other rocks are the same tile as the one the ladder replaced.)
+                    if (_visitedZones.Contains(id) && zone.GetTile(a[0], a[1], a[2]) != a[3] &&
+                        !(sector?.Type == ZoneType.Goal && HasTile(zone, a[3]))) continue;
                     if (!StateAllows(id, action)) continue;
                     return (id, a[0], a[1]);
                 }
@@ -341,31 +318,39 @@ public partial class MissionSolver
         var here = world.Sectors.TryGetValue(_state.CurrentZoneId, out var at) ? at.Zone : _state.CurrentZoneId;
         bool acrossWater = !island.Contains(here);
 
-        // Across water: the vehicle that lands there. On land: the nearest blockade still standing.
+        // Across water: a vehicle on our side that lands on theirs - out from the mainland, or
+        // back from an island. On land: the nearest blockade still standing.
+        var ourSide = Component(world, here);
         var gate = acrossWater
-            ? world.Sectors.Values.Distinct().FirstOrDefault(s =>
-                  s.Type == ZoneType.TravelStart && VehicleOf(s.Zone) is { } v && island.Contains(v.Argument))
+            ? FirstVehicleToward(world, ourSide, island)
             : world.Sectors.Values.Distinct()
                 .Where(s => s.Type is ZoneType.BlockadeNorth or ZoneType.BlockadeSouth or ZoneType.BlockadeEast or ZoneType.BlockadeWest &&
                             !s.Solved && s.RequiredItem >= 0)
                 .OrderBy(s => GridDistance(world, s.Zone)) // the one we are standing in first
                 .FirstOrDefault();
-        if (gate == null) return null;
-
-        if (!gate.Solved && gate.RequiredItem >= 0)
+        if (gate == null)
         {
-            if (!_state.HasItem(gate.RequiredItem))
-                return FetchItem(world, gate.RequiredItem);
-            if (FindUseSpot(world, gate.Zone, gate.RequiredItem) is { } use)
-                return _state.CurrentZoneId == use.zone
-                    ? UseAt(gate.RequiredItem, use.x, use.y, "Open the way")
-                    : NavigateToward(world, use.zone, gate.Zone);
+            Console.WriteLine($"[BOT] No way across to {target}: here {here} side [{string.Join(",", ourSide)}], there [{string.Join(",", island)}]; " +
+                string.Join(" ", world.Sectors.Values.Distinct().Where(s => VehicleOf(s.Zone) != null).Select(s => $"{s.Zone}:{s.Type}->{VehicleOf(s.Zone)!.Argument}")));
+            return null;
         }
 
-        if (gate.Type == ZoneType.TravelStart && VehicleOf(gate.Zone) is { } vehicle)
-            return _state.CurrentZoneId == gate.Zone
-                ? new BotObjective { Type = ObjectiveType.WalkToPosition, Description = "Take the vehicle", TargetX = vehicle.X, TargetY = vehicle.Y }
-                : NavigateToward(world, gate.Zone, gate.Zone);
+        // The fare is paid on the way out; the ride home is free.
+        if (!gate.Solved && gate.RequiredItem >= 0 && gate.Type != ZoneType.TravelEnd &&
+            ClearGate(world, gate) is { } cleared)
+            return cleared;
+
+        if (gate.Type is ZoneType.TravelStart or ZoneType.TravelEnd && VehicleOf(gate.Zone) is { } vehicle)
+        {
+            if (_state.CurrentZoneId != gate.Zone)
+                return NavigateToward(world, gate.Zone, gate.Zone);
+            if (_state.CurrentZone!.GetTile(vehicle.X, vehicle.Y, 1) == 0xFFFF)
+                return new BotObjective { Type = ObjectiveType.WalkToPosition, Description = "Take the vehicle", TargetX = vehicle.X, TargetY = vehicle.Y };
+            // Something sits on it (the plane itself): a bump script is what flies you - the
+            // pilot's, or the airship's gangway once the Baron has been paid.
+            if (UsefulBump() is { } ask)
+                return ask;
+        }
         return null;
     }
 
@@ -380,9 +365,15 @@ public partial class MissionSolver
                         return NavigateToward(world, id, finder.Zone);
                     // Only if it is actually lying there: Find zones hide items behind their own
                     // puzzles (a locked chest), which this bot does not solve yet.
-                    if (_state.CurrentZone!.GetTile(spot.X, spot.Y, 1) == item &&
-                        !_unreachablePositions.Contains((id, spot.X, spot.Y)))
-                        return new BotObjective { Type = ObjectiveType.PickupItem, Description = $"Fetch item {item}", TargetX = spot.X, TargetY = spot.Y };
+                    var pickup = new BotObjective { Type = ObjectiveType.PickupItem, Description = $"Fetch item {item}", TargetX = spot.X, TargetY = spot.Y };
+                    if (_state.CurrentZone!.GetTile(spot.X, spot.Y, 1) == item)
+                    {
+                        // Walled in by push-blocks (a column of crates in front of it): shift them.
+                        if (!ReachableWithoutPushing(_state.CurrentZone).Contains((spot.X, spot.Y)) && Unjam(pickup) is { } shift)
+                            return shift;
+                        if (!_unreachablePositions.Contains((id, spot.X, spot.Y)))
+                            return pickup;
+                    }
                     // Under a crate: push it off, from a side where the square beyond is free.
                     if (PushOff(spot.X, spot.Y) is { } push)
                         return push;
@@ -406,10 +397,9 @@ public partial class MissionSolver
             int fx = x - dx, fy = y - dy;      // where the hero pushes from
             if (bx < 0 || by < 0 || bx >= zone.Width || by >= zone.Height) continue;
             if (fx < 0 || fy < 0 || fx >= zone.Width || fy >= zone.Height) continue;
-            var landing = zone.GetTile(bx, by, 1);
-            if (landing != 0xFFFF && (landing >= _gameData.Tiles.Count || _gameData.Tiles[landing].IsObject)) continue;
+            if (zone.GetTile(bx, by, 1) != 0xFFFF) continue; // a block only moves into an empty square
             var from = zone.GetTile(fx, fy, 1);
-            if (from != 0xFFFF && (from >= _gameData.Tiles.Count || _gameData.Tiles[from].IsObject)) continue;
+            if (from != 0xFFFF && (from >= _gameData.Tiles.Count || _gameData.Tiles[from].IsSolid)) continue;
             return new BotObjective
             {
                 Type = ObjectiveType.PushObject, Description = "Push the crate off the item",
@@ -419,7 +409,7 @@ public partial class MissionSolver
 
         // Wedged: pull it instead - stand on an open side and step away from it.
         bool Open(int px, int py) => px >= 0 && py >= 0 && px < zone.Width && py < zone.Height &&
-            zone.GetTile(px, py, 1) is var t && (t == 0xFFFF || t < _gameData.Tiles.Count && !_gameData.Tiles[t].IsObject);
+            zone.GetTile(px, py, 1) is var t && (t == 0xFFFF || t < _gameData.Tiles.Count && !_gameData.Tiles[t].IsSolid);
         foreach (var (dir, dx, dy) in new[] { (Direction.Up, 0, -1), (Direction.Down, 0, 1), (Direction.Left, -1, 0), (Direction.Right, 1, 0) })
         {
             if (!Open(x + dx, y + dy) || !Open(x + 2 * dx, y + 2 * dy)) continue;
@@ -429,6 +419,72 @@ public partial class MissionSolver
                 TargetX = x, TargetY = y, Direction = dir,
             };
         }
+        return null;
+    }
+
+    /// <summary>
+    /// Walk into (x, y) from a side the hero can reach: what Bump scripts answer to. (Talking
+    /// swings the weapon at a tile, which no script listens for.) Done as a push that the
+    /// tile refuses - the engine bumps it instead.
+    /// </summary>
+    private BotObjective? BumpInto(int x, int y, string why)
+    {
+        var reach = ReachableWithoutPushing(_state.CurrentZone!);
+        foreach (var (dir, dx, dy) in new[] { (Direction.Up, 0, -1), (Direction.Down, 0, 1), (Direction.Left, -1, 0), (Direction.Right, 1, 0) })
+            if (reach.Contains((x - dx, y - dy)))
+                return new BotObjective { Type = ObjectiveType.PushObject, Description = why, TargetX = x, TargetY = y, Direction = dir };
+        return null;
+    }
+
+    /// <summary>
+    /// Chain done but not won: the artefact is handed over, and what remains is the goal
+    /// room's own ending - open the cage, talk to Pacal - which is the script with WinGame.
+    /// </summary>
+    private BotObjective? FinishGame(WorldMap world)
+    {
+        var goal = world.Mission?.PuzzleChain.LastOrDefault()?.ZoneId;
+        if (goal is not { } goalZone) return null;
+        var rooms = ZoneAndRooms(goalZone).ToList();
+        if (rooms.Contains(_state.CurrentZoneId) && UsefulBump() is { } bump) return bump;
+        var ending = rooms.FirstOrDefault(id =>
+            _gameData.Zones[id].Actions.Any(a => a.Instructions.Any(n => n.Opcode == InstructionOpcode.WinGame)), -1);
+        if (ending < 0 || ending == _state.CurrentZoneId) return null;
+        return NavigateToward(world, ending, goalZone);
+    }
+
+    private static bool HasTile(Zone zone, int tile)
+    {
+        for (int y = 0; y < zone.Height; y++)
+            for (int x = 0; x < zone.Width; x++)
+                if (zone.GetTile(x, y, 1) == tile) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// A bump script here that does something - moves tiles, sets a counter, wins - whose
+    /// tile is in place and whose state conditions hold, and that the hero can reach.
+    /// Winning ones first. Scripts that only talk are left alone.
+    /// </summary>
+    private BotObjective? UsefulBump()
+    {
+        var zone = _state.CurrentZone!;
+        var talk = new[] { InstructionOpcode.SpeakHero, InstructionOpcode.SpeakNpc, InstructionOpcode.SpeakNpc2,
+            InstructionOpcode.SetTileNeedsDisplay, InstructionOpcode.SetRectNeedsDisplay, InstructionOpcode.Wait,
+            InstructionOpcode.Redraw, InstructionOpcode.PlaySound };
+        var found = new List<(int x, int y, bool wins)>();
+        for (int i = 0; i < zone.Actions.Count; i++)
+        {
+            var action = zone.Actions[i];
+            if (_state.DisabledActions.Contains((_state.CurrentZoneId, i))) continue;
+            var b = action.Conditions.FirstOrDefault(c => c.Opcode == ConditionOpcode.Bump && c.Arguments.Count >= 3);
+            if (b == null || zone.GetTile(b.Arguments[0], b.Arguments[1], 1) != b.Arguments[2]) continue;
+            if (!StateAllows(_state.CurrentZoneId, action)) continue;
+            if (action.Instructions.All(n => talk.Contains(n.Opcode) || !Enum.IsDefined(n.Opcode))) continue;
+            found.Add((b.Arguments[0], b.Arguments[1], action.Instructions.Any(n => n.Opcode == InstructionOpcode.WinGame)));
+        }
+        foreach (var (x, y, _) in found.OrderByDescending(f => f.wins))
+            if (BumpInto(x, y, "Bump it") is { } bump)
+                return bump;
         return null;
     }
 
@@ -455,8 +511,63 @@ public partial class MissionSolver
         return (100, 100);
     }
 
+    private Sector? _clearing;
+
+    /// <summary>Use the gate's item on it - fetching the item first if need be.</summary>
+    private BotObjective? ClearGate(WorldMap world, Sector gate)
+    {
+        if (!_state.HasItem(gate.RequiredItem))
+            return FetchItem(world, gate.RequiredItem);
+        if (FindUseSpot(world, gate.Zone, gate.RequiredItem) is not { } use) return null;
+        return _state.CurrentZoneId == use.zone
+            ? UseAt(gate.RequiredItem, use.x, use.y, "Open the way")
+            : NavigateToward(world, use.zone, gate.Zone);
+    }
+
+    /// <summary>Whether <paramref name="target"/> lies on the far side of blockade <paramref name="block"/>.</summary>
+    private static bool Faces(WorldMap world, Sector block, int target)
+    {
+        var (bx, by) = FindCell(world, block.Zone);
+        var (tx, ty) = FindCell(world, target);
+        return block.Type switch
+        {
+            ZoneType.BlockadeEast => tx > bx,
+            ZoneType.BlockadeWest => tx < bx,
+            ZoneType.BlockadeNorth => ty < by,
+            ZoneType.BlockadeSouth => ty > by,
+            _ => false,
+        };
+    }
+
+    /// <summary>
+    /// The vehicle to take first to get from one landmass to another - maybe via a third:
+    /// islands are reached from the mainland, so island to island goes by way of it.
+    /// </summary>
+    private Sector? FirstVehicleToward(WorldMap world, HashSet<int> from, HashSet<int> to)
+    {
+        var vehicles = world.Sectors.Values.Distinct()
+            .Where(s => s.Type is ZoneType.TravelStart or ZoneType.TravelEnd && VehicleOf(s.Zone) != null).ToList();
+        var seen = new List<HashSet<int>> { from };
+        var pending = new Queue<(HashSet<int> Side, Sector? First)>();
+        pending.Enqueue((from, null));
+        while (pending.Count > 0)
+        {
+            var (side, first) = pending.Dequeue();
+            foreach (var s in vehicles.Where(v => side.Contains(v.Zone)))
+            {
+                int landing = VehicleOf(s.Zone)!.Argument;
+                if (to.Contains(landing)) return first ?? s;
+                if (seen.Any(c => c.Contains(landing))) continue;
+                var next = Component(world, landing);
+                seen.Add(next);
+                pending.Enqueue((next, first ?? s));
+            }
+        }
+        return null;
+    }
+
     private ZoneObject? VehicleOf(int zoneId) =>
-        _gameData.Zones[zoneId].Objects.FirstOrDefault(o => o.Type == ZoneObjectType.VehicleToSecondary);
+        _gameData.Zones[zoneId].Objects.FirstOrDefault(o => o.Type is ZoneObjectType.VehicleToSecondary or ZoneObjectType.VehicleToPrimary);
 
     /// <summary>Grid zones joined to <paramref name="zoneId"/> by walking.</summary>
     private static HashSet<int> Component(WorldMap world, int zoneId)
@@ -486,12 +597,19 @@ public partial class MissionSolver
         var current = _state.CurrentZone!;
         var inside = ZoneAndRooms(_state.CurrentZoneId).ToHashSet();
 
+        // Came into this room for a key: take it before going on.
+        if (_wantedKey >= 0)
+        {
+            if (_state.HasItem(_wantedKey)) _wantedKey = -1;
+            else if (FetchHere(_wantedKey) is { } key) return key;
+        }
+
         // The target is behind one of our doors: take the door that leads towards it.
         if (inside.Contains(targetZone))
         {
             foreach (var door in current.Objects.Where(o => o.Type == ZoneObjectType.DoorEntrance))
                 if (ZoneAndRooms(door.Argument).Contains(targetZone))
-                    return new BotObjective
+                    return UnlockDoor(world, door, outdoor) ?? new BotObjective
                     {
                         Type = ObjectiveType.EnterDoor, Description = $"Door toward zone {targetZone}",
                         TargetX = door.X, TargetY = door.Y,
@@ -512,6 +630,100 @@ public partial class MissionSolver
         {
             Type = ObjectiveType.ChangeZone, Description = $"Travel to zone {outdoor}", TargetZoneId = outdoor,
         };
+    }
+
+    /// <summary>
+    /// A door whose script takes a key ("Locked again!"): use the key, or go and get it -
+    /// from a crate hotspot in this room, or in a room behind another door (its own key
+    /// first, and so on). Null when the door is open or no key is known.
+    /// </summary>
+    private BotObjective? UnlockDoor(WorldMap world, ZoneObject door, int outdoor)
+    {
+        var zone = _state.CurrentZone!;
+        var tile = zone.GetTile(door.X, door.Y, 1);
+        if (tile == 0xFFFF) return OpenGateToward(world, door.X, door.Y, outdoor);
+        var key = zone.Actions.SelectMany(a => a.Conditions)
+            .Where(c => c.Opcode == ConditionOpcode.PlacedItemIs && c.Arguments.Count >= 5 &&
+                        c.Arguments[0] == door.X && c.Arguments[1] == door.Y && c.Arguments[3] == tile && c.Arguments[4] >= 0)
+            .Select(c => (int)c.Arguments[4]).FirstOrDefault(-1);
+        if (key < 0) return OpenGateToward(world, door.X, door.Y, outdoor);
+        return UnlockAt(world, door.X, door.Y, key, ZoneAndRooms(door.Argument).ToHashSet(), outdoor);
+    }
+
+    /// <summary>
+    /// (x, y) is walled off inside this room: find a gate - a tile a script removes when a
+    /// key is used on it (room 65's "Van Loon's got to be in here somewhere...") - whose
+    /// removal opens the way, and unlock that.
+    /// </summary>
+    private BotObjective? OpenGateToward(WorldMap world, int x, int y, int outdoor)
+    {
+        var zone = _state.CurrentZone!;
+        bool Near(HashSet<(int x, int y)> r)
+        {
+            for (int dy = -1; dy <= 1; dy++)
+                for (int dx = -1; dx <= 1; dx++)
+                    if (r.Contains((x + dx, y + dy))) return true;
+            return false;
+        }
+        var reach = ReachableWithoutPushing(zone);
+        if (Near(reach)) return null;
+
+        foreach (var action in zone.Actions)
+            foreach (var c in action.Conditions.Where(c => c.Opcode == ConditionOpcode.PlacedItemIs && c.Arguments.Count >= 5 && c.Arguments[4] >= 0))
+            {
+                int gx = c.Arguments[0], gy = c.Arguments[1];
+                if (zone.GetTile(gx, gy, 1) != c.Arguments[3]) continue;
+                if (!action.Instructions.Any(i => i.Opcode == InstructionOpcode.RemoveTile && i.Arguments.Count >= 2 &&
+                                                  i.Arguments[0] == gx && i.Arguments[1] == gy)) continue;
+                var grid = new ushort[zone.Width, zone.Height];
+                for (int yy = 0; yy < zone.Height; yy++)
+                    for (int xx = 0; xx < zone.Width; xx++)
+                        grid[xx, yy] = zone.GetTile(xx, yy, 1);
+                grid[gx, gy] = 0xFFFF;
+                var opened = BlockPuzzle.Reach(grid, t => t < _gameData.Tiles.Count && _gameData.Tiles[t].IsDraggable,
+                    t => t >= _gameData.Tiles.Count || _gameData.Tiles[t].IsSolid, (_state.PlayerX, _state.PlayerY));
+                if (Near(opened))
+                    return UnlockAt(world, gx, gy, c.Arguments[4], new HashSet<int>(), outdoor);
+            }
+        return null;
+    }
+
+    /// <summary>Use <paramref name="key"/> on (x, y), or go and get it first - here, or in another room.</summary>
+    private BotObjective? UnlockAt(WorldMap world, int x, int y, int key, HashSet<int> beyond, int outdoor)
+    {
+        if (_state.HasItem(key)) return UseAt(key, x, y, "Unlock the way");
+        if (FetchHere(key) is { } fetch) return fetch;
+        _wantedKey = key; // remembered for when we reach the room it is in
+
+        // In another room: go there (through its own locked door if need be).
+        if (_unlockDepth > 4) return null; // keys that lead in a circle
+        foreach (var id in ZoneAndRooms(_state.CurrentZoneId).Skip(1))
+            if (_gameData.Zones[id].Objects.Any(o => o.Argument == key && o.Enabled) && !beyond.Contains(id))
+            {
+                _unlockDepth++;
+                try { return NavigateToward(world, id, outdoor); }
+                finally { _unlockDepth--; }
+            }
+        return null;
+    }
+
+    private int _unlockDepth;
+    private int _wantedKey = -1;
+
+    /// <summary>Pick up <paramref name="item"/> if it lies in this zone - under a crate, or behind blocks.</summary>
+    private BotObjective? FetchHere(int item)
+    {
+        var zone = _state.CurrentZone!;
+        foreach (var spot in zone.Objects.Where(o => o.Argument == item && o.Enabled))
+        {
+            var pickup = new BotObjective { Type = ObjectiveType.PickupItem, Description = $"Fetch key {item}", TargetX = spot.X, TargetY = spot.Y };
+            if (zone.GetTile(spot.X, spot.Y, 1) == item)
+                return ReachableWithoutPushing(zone).Contains((spot.X, spot.Y)) ? pickup : Unjam(pickup) ?? pickup;
+        }
+        foreach (var spot in zone.Objects.Where(o => o.Argument == item && o.Enabled))
+            if (PushOff(spot.X, spot.Y) is { } uncover)
+                return uncover;
+        return null;
     }
 
     private IEnumerable<int> ZoneAndRooms(int zoneId)

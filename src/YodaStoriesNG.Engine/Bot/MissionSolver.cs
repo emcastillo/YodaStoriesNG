@@ -96,8 +96,11 @@ public partial class MissionSolver
     public void OnZoneChanged()
     {
         _zoneChangesSinceBlockedExitRetry++;
-        _unreachablePositions.RemoveWhere(p => p.zoneId == _state.CurrentZoneId);
+        ForgetUnreachableHere();
     }
+
+    public void ForgetUnreachableHere() =>
+        _unreachablePositions.RemoveWhere(p => p.zoneId == _state.CurrentZoneId);
 
     /// <summary>
     /// Mark current zone as visited.

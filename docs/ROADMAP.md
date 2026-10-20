@@ -39,15 +39,19 @@ that follows the chain. Still open:
 
 - **Two instructions are undecoded** (`0x14`, `0x23`) and two conditions are the least
   certain of the table - see [SCRIPTING.md](SCRIPTING.md#indiana-jones-opcode-numbers).
-- **The bot solves puzzles but has not finished a whole chain yet.** On the reference world
-  (`YSNG_SEED=5`) it takes the briefing, fetches dynamite and blasts a blockade, solves a
-  ledge-and-floor-switch room, pulls a crate off the Nitro, and reaches step 2 of 5.
-  What stops it next: islands (vehicle travel planning is in, untested end to end), boulder
-  rows over pressure plates (a greedy push/pull heuristic, not a Sokoban solver), and zones
-  whose layout dice are not seeded, so the same seed can differ between runs.
-  `YSNG_SEED=5 YSNG_BOT_SECONDS=600` reproduces it.
-- **Handing the artefact to Marcus** is scripted in his office but nothing requires it:
-  the game is won when the artefact is taken (`WinGame` fires there).
+- **The bot has won a whole game, on one world.** On the reference world (`YSNG_SEED=5`)
+  it takes the briefing, blasts a blockade, solves the ledge room, pulls a crate off the
+  Nitro, clears a boulder row off a pressure plate, flies to one island and back, digs a
+  fare out from behind a column of crates, flies to a second island, trades for the fake
+  map, flies home, and works through the temple - a trapdoor, three locked doors, a gate,
+  Van Loon, the cage - to Pacal and `WinGame`, in about four minutes of game time.
+  `YSNG_SEED=5 YSNG_BOT_SECONDS=900` reproduces it.
+- **Not every run of that world wins, and other worlds stop earlier.** Monsters still move
+  on unseeded randomness and real frame time, so two runs of one seed diverge (zone layouts
+  no longer do - their dice come from the world seed). Other seeds have stopped at puzzles
+  the bot has not met yet: an item in a room none of its tricks reach (seed 2, zone 121),
+  and the plateau traders sealed by cliffs (seed 1, zone 144). Each new world is a new
+  puzzle or two; the bot learns them one at a time.
 - **Everything learned here is Indiana Jones-only for now** - the character-type field,
   the NPC-hotspot fix, `SectorPuzzles`, the generator. Yoda Stories gets them when it moves
   to the original generator.

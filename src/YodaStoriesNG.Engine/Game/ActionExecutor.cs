@@ -10,7 +10,6 @@ public class ActionExecutor
 {
     private readonly GameData _gameData;
     private readonly GameState _state;
-    private readonly Random _random = new();
 
     // Action execution context
     // The zone's own random value: a zone rolls its layout once and checks it for ever after,
@@ -21,6 +20,18 @@ public class ActionExecutor
         set => _state.ZoneRandom[_state.CurrentZoneId] = value;
     }
     private Zone? _currentZone;
+
+    /// <summary>
+    /// A die roll that depends only on the world seed, the zone and how many times that zone
+    /// has rolled - not on frame timing or the order zones were visited - so a seed replays.
+    /// </summary>
+    private int NextZoneRoll(int sides)
+    {
+        var zone = _state.CurrentZoneId;
+        var n = _state.ZoneRolls.GetValueOrDefault(zone);
+        _state.ZoneRolls[zone] = n + 1;
+        return new Random(unchecked(_state.WorldSeed * 486187739 + zone * 7919 + n)).Next(sides);
+    }
     private ActionTrigger _currentTrigger;
     private int _currentActionIndex = -1;
 
@@ -35,6 +46,8 @@ public class ActionExecutor
     public int PlacedY { get; set; } = -1;
     public int? DroppedItemId { get; set; }
     public int? InteractingNpcId { get; set; }
+    /// <summary>A script put the hero on a vehicle, which should take them (WebFun "Stand").</summary>
+    public ZoneObject? PlacedOnVehicle { get; set; }
     public int BumpX { get; set; }
     public int BumpY { get; set; }
 
@@ -326,7 +339,7 @@ public class ActionExecutor
             // Only during the arrival pass (WebFun EvaluationMode.ByPlane): "have an X-Wing
             // here" stays true the whole visit and re-ran landing cutscenes every frame.
             case ConditionOpcode.EnterByPlane:
-                return trigger == ActionTrigger.ZoneEnter && _state.XWingPosition.HasValue;
+                return trigger == ActionTrigger.ZoneEnter && (_state.XWingPosition.HasValue || _state.ArrivingByVehicle);
 
             case ConditionOpcode.HeroIsAt:
                 // Check if hero is at position
@@ -436,7 +449,7 @@ public class ActionExecutor
 
             case InstructionOpcode.RollDice:
                 if (args.Count >= 1)
-                    _lastRandomValue = 1 + _random.Next(Math.Max(1, (int)args[0])); // 1..max, as WebFun roll-dice.ts
+                    _lastRandomValue = 1 + NextZoneRoll(Math.Max(1, (int)args[0])); // 1..max, as WebFun roll-dice.ts
                 break;
 
             case InstructionOpcode.SetCounter:
@@ -501,6 +514,10 @@ public class ActionExecutor
                 {
                     _state.PlayerX = args[0];
                     _state.PlayerY = args[1];
+                    // The last placement wins: a flight ends by setting the hero on the plane.
+                    PlacedOnVehicle = _state.CurrentZone?.Objects.FirstOrDefault(o => o.Enabled &&
+                        o.X == args[0] && o.Y == args[1] &&
+                        o.Type is ZoneObjectType.VehicleToSecondary or ZoneObjectType.VehicleToPrimary);
                 }
                 break;
 

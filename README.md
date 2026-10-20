@@ -39,8 +39,9 @@ opcodes are implemented.
 **Indiana Jones generates real missions.** Marcus briefs you in the town, the chain of
 trades and puzzle rooms leads to a temple and the artefact - built by a port of the original
 world generator, with Indy's own script opcodes and puzzle types decoded from its data (see
-[WORLD-GENERATION.md](docs/WORLD-GENERATION.md)). The bot plays the first steps of a
-chain but does not finish one yet; that is the top of the [roadmap](docs/ROADMAP.md).
+[WORLD-GENERATION.md](docs/WORLD-GENERATION.md)). The bot has played one world
+from Marcus's briefing to the rescue and the win; other worlds still stop it at puzzles it
+has not learned yet - that is the top of the [roadmap](docs/ROADMAP.md).
 
 ![Marcus briefing Indy in his office](docs/shots/marcus-briefing.png)
 

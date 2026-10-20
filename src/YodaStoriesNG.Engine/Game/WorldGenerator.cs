@@ -296,7 +296,8 @@ public class WorldGenerator
         CurrentWorld = new WorldMap
         {
             Planet = CurrentMission.Planet,
-            Mission = CurrentMission
+            Mission = CurrentMission,
+            Seed = _random.Next(),
         };
 
         // Generate Dagobah (starting area - fixed layout)
@@ -335,9 +336,11 @@ public class WorldGenerator
             ? new Random(fixedSeed) : _random;
 
         OriginalWorldGenerator? generator = null;
+        int seed = 0;
         for (int attempt = 1; generator == null; attempt++)
         {
-            var candidate = new OriginalWorldGenerator(_gameData, seeds.Next());
+            seed = seeds.Next();
+            var candidate = new OriginalWorldGenerator(_gameData, seed);
             try
             {
                 candidate.Generate(Planet.None, size);
@@ -368,6 +371,7 @@ public class WorldGenerator
         var world = new WorldMap
         {
             Planet = Planet.None,
+            Seed = seed,
             Grid = new int?[10, 10],
             TypeMap = new SectorType[10, 10],
             OrderMap = new int[10, 10],
@@ -1433,6 +1437,12 @@ public class WorldGenerator
 public class WorldMap
 {
     public Planet Planet { get; set; }
+
+    /// <summary>
+    /// The seed this world was generated from. Zone dice derive from it too, so one seed
+    /// plays out the same way every time.
+    /// </summary>
+    public int Seed { get; set; }
     public Mission? Mission { get; set; }
 
     // Grid of zone IDs (null = empty cell)

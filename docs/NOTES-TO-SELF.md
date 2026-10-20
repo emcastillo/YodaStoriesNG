@@ -26,6 +26,20 @@ touching the parser, the script engine or the release build.
   documentation calls an item class is the puzzle type. See
   [WORLD-GENERATION.md](WORLD-GENERATION.md).
 
+## Moving through a zone
+
+- **Anything in the object layer stops the hero.** Not just tiles flagged Object: a pilot is
+  a Character tile, Pacal an Item tile, and walking onto them skipped the bump scripts that
+  fly the plane and win the game. Items stay walk-over pickups here, except where a bump
+  script is waiting for that tile.
+- **A block only ever moves into an empty square.** Pushing a crate onto an item used to
+  overwrite the item. The original checks for no tile at all (WebFun `hero.ts` `_doDrag`).
+- **The hero moves diagonally, with no corner check,** and slides diagonally round an
+  obstacle. Some doorways are only reachable that way, boxed in by tree trunks.
+- **A vehicle takes you when you stand on it, not when you walk onto it.** Flight scripts
+  end by putting the hero on the plane's square; that is the take-off. Remember the square
+  the script chose - input can move the hero before the speech is dismissed.
+
 ## Rendering and the capture harness
 
 - **Read the backbuffer before `RenderPresent`, not after** - which is why every window

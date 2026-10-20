@@ -31,6 +31,7 @@ public static class SelfTest
         failures += Check("menu bar keeps off user32 away from Windows", MenuBarStaysOffUser32);
         failures += Check("file filters convert for portable dialogs", FilterConvertsToExtensions);
         failures += Check("SDL menu bar works from the keyboard", MenuBarKeyboard);
+        failures += Check("bot solves a boulder row over a plate", Bot.BlockPuzzle.SelfTest);
 
         Console.WriteLine(failures == 0 ? "\nSelf-test PASSED" : $"\nSelf-test FAILED ({failures})");
         return failures == 0 ? 0 : 1;

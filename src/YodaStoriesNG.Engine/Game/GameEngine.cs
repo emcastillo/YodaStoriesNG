@@ -691,7 +691,8 @@ public unsafe partial class GameEngine : IDisposable
         _worldGenerator = new WorldGenerator(_gameData!);
         _worldGenerator.DumpDagobahInfo();  // Debug: print Dagobah zone analysis
         var world = _worldGenerator.GenerateWorld(_selectedWorldSize);
-        Console.WriteLine($"Generated {_selectedWorldSize} world ({world.GridWidth}x{world.GridHeight} grid)");
+        _state.WorldSeed = world.Seed;
+        Console.WriteLine($"Generated {_selectedWorldSize} world ({world.GridWidth}x{world.GridHeight} grid), seed {world.Seed}");
 
         _sectorPuzzles = null;
         if (world.Sectors.Count > 0)
@@ -1916,8 +1917,9 @@ public unsafe partial class GameEngine : IDisposable
         if (middleTile != 0xFFFF && middleTile < _gameData!.Tiles.Count)
         {
             var tile = _gameData.Tiles[middleTile];
+            bool diagonal = dx != 0 && dy != 0;
 
-            if (tile.IsDraggable)
+            if (tile.IsDraggable && !diagonal)
             {
                 // Try to push the block
                 var pushX = newX + dx;
@@ -1927,8 +1929,10 @@ public unsafe partial class GameEngine : IDisposable
                 if (pushX >= 0 && pushX < _state.CurrentZone.Width &&
                     pushY >= 0 && pushY < _state.CurrentZone.Height)
                 {
+                    // Only into an empty square, as the original (WebFun hero.ts _doDrag): a block
+                    // pushed onto an item used to overwrite it.
                     var destTile = _state.CurrentZone.GetTile(pushX, pushY, 1);
-                    if (destTile == 0xFFFF || (destTile < _gameData.Tiles.Count && !_gameData.Tiles[destTile].IsObject))
+                    if (destTile == 0xFFFF)
                     {
                         // Push the block
                         _state.CurrentZone.SetTile(pushX, pushY, 1, middleTile);
@@ -1952,12 +1956,33 @@ public unsafe partial class GameEngine : IDisposable
                     return;
                 }
             }
-            else if (tile.IsObject)
+            else if (tile.IsSolid)
             {
                 // Collision - trigger bump action
                 BumpInto(newX, newY);
+
+                // The original then slides round the obstacle diagonally (WebFun hero.ts
+                // move()), which is the only way into some doorways hemmed in by trees.
+                if (!tryPull && !diagonal && !_messages.HasDialogue)
+                    foreach (var (sx, sy) in dx == 0 ? new[] { (-1, dy), (1, dy) } : new[] { (dx, 1), (dx, -1) })
+                        if (IsOpenFloor(_state.PlayerX + sx, _state.PlayerY + sy))
+                        {
+                            TryMovePlayer(sx, sy, direction);
+                            break;
+                        }
                 return;
             }
+        }
+
+        // A tile a bump script is waiting for is bumped, not walked over - in the original
+        // anything in the object layer stops you. (Pacal is an item tile; walking onto him
+        // picked him up and skipped the thank-you that wins the game.)
+        if (middleTile != 0xFFFF && _state.CurrentZone.Actions.Any(a => a.Conditions.Any(c =>
+                c.Opcode == ConditionOpcode.Bump && c.Arguments.Count >= 3 &&
+                c.Arguments[0] == newX && c.Arguments[1] == newY && c.Arguments[2] == middleTile)))
+        {
+            BumpInto(newX, newY);
+            return;
         }
 
         // Check collision with NPCs
@@ -2103,7 +2128,7 @@ public unsafe partial class GameEngine : IDisposable
         if (middleTile != 0xFFFF && middleTile < _gameData!.Tiles.Count)
         {
             var tile = _gameData.Tiles[middleTile];
-            if (tile.IsObject && !tile.IsDraggable)
+            if (tile.IsSolid && !tile.IsDraggable)
                 return false;
         }
 
@@ -2468,8 +2493,15 @@ public unsafe partial class GameEngine : IDisposable
                         var destZone = _gameData.Zones[destZoneId];
                         int? spawnX = null, spawnY = null;
 
+                        // A vehicle lands on its counterpart (WebFun use-transport.ts).
+                        bool byVehicle = obj.Type is ZoneObjectType.VehicleToSecondary or ZoneObjectType.VehicleToPrimary;
+                        var counterpart = obj.Type == ZoneObjectType.VehicleToSecondary
+                            ? ZoneObjectType.VehicleToPrimary : ZoneObjectType.VehicleToSecondary;
+                        if (byVehicle && destZone.Objects.FirstOrDefault(o => o.Type == counterpart) is { } landing)
+                            (spawnX, spawnY) = (landing.X, landing.Y);
+
                         // Look for a door that leads back to current zone, or a spawn point
-                        foreach (var destObj in destZone.Objects)
+                        foreach (var destObj in byVehicle && spawnX.HasValue ? Enumerable.Empty<ZoneObject>() : destZone.Objects)
                         {
                             // Check for door leading back, or door with 65535 (return door)
                             if ((destObj.Type == ZoneObjectType.DoorEntrance || destObj.Type == ZoneObjectType.DoorExit) &&
@@ -2486,7 +2518,9 @@ public unsafe partial class GameEngine : IDisposable
                             }
                         }
 
+                        _state.ArrivingByVehicle = byVehicle;
                         LoadZone(destZoneId, spawnX, spawnY);
+                        _state.ArrivingByVehicle = false;
                     }
                     break;
 
@@ -3855,6 +3889,17 @@ public unsafe partial class GameEngine : IDisposable
         if (_showingTitleScreen || _state.IsPaused)
             return;
 
+        // The airfield's flight ends with a script putting the hero on the plane's square;
+        // standing there is what takes off (WebFun HotspotExecutionMode.Stand).
+        // (Checked once the speech that usually goes with it has been dismissed.)
+        // Remembered rather than read off the hero, whom input can move before then.
+        if (_actionExecutor?.PlacedOnVehicle is { } vehicle && !_messages.HasDialogue)
+        {
+            _actionExecutor.PlacedOnVehicle = null;
+            (_state.PlayerX, _state.PlayerY) = (vehicle.X, vehicle.Y);
+            CheckZoneObjects();
+        }
+
         // Update animation
         _state.AnimationTimer += deltaTime;
         if (_state.AnimationTimer >= AnimationFrameTime)
@@ -4348,7 +4393,7 @@ public unsafe partial class GameEngine : IDisposable
         if (middleTile != 0xFFFF && middleTile < _gameData!.Tiles.Count)
         {
             var tile = _gameData.Tiles[middleTile];
-            if (tile.IsObject && !tile.IsDraggable)
+            if (tile.IsSolid && !tile.IsDraggable)
                 return false;
         }
 
@@ -4964,6 +5009,16 @@ public unsafe partial class GameEngine : IDisposable
     /// Gets the character index for a weapon tile.
     /// </summary>
     /// <summary>Runs the zone's bump scripts for walking (or pressing action) into (x, y).</summary>
+    /// <summary>Somewhere the hero can step without pushing: in the zone, no object, no one standing there.</summary>
+    private bool IsOpenFloor(int x, int y)
+    {
+        var zone = _state.CurrentZone;
+        if (zone == null || x < 0 || y < 0 || x >= zone.Width || y >= zone.Height) return false;
+        var t = zone.GetTile(x, y, 1);
+        if (t != 0xFFFF && (t >= _gameData!.Tiles.Count || _gameData.Tiles[t].IsSolid)) return false;
+        return !_state.ZoneNPCs.Any(n => n.IsEnabled && n.IsAlive && n.X == x && n.Y == y);
+    }
+
     private void BumpInto(int x, int y)
     {
         if (_actionExecutor == null) return;

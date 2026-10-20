@@ -106,6 +106,14 @@ public class Pathfinder
             (endX, endY) = nearestWalkable.Value;
         }
 
+        // Floor switches that are live - trapdoors among them - are stepped on on purpose
+        // or not at all: crossing one on the way elsewhere teleported the bot back into a pit.
+        var traps = zone.Actions.SelectMany(a => a.Conditions)
+            .Where(c => c.Opcode == Data.ConditionOpcode.StandingOn && c.Arguments.Count >= 3 &&
+                        zone.GetTile(c.Arguments[0], c.Arguments[1], 0) == c.Arguments[2])
+            .Select(c => ((int)c.Arguments[0], (int)c.Arguments[1]))
+            .Where(t => t != (endX, endY)).ToHashSet();
+
         var openSet = new PriorityQueue<PathNode, int>();
         var closedSet = new HashSet<(int, int)>();
         var cameFrom = new Dictionary<(int, int), (int, int)>();
@@ -136,15 +144,15 @@ public class Pathfinder
 
             closedSet.Add(currentPos);
 
-            // Check all neighbors (4-directional)
-            var neighbors = new (int dx, int dy)[] { (0, -1), (0, 1), (-1, 0), (1, 0) };
+            // Check all neighbors. The original moves diagonally too, with no corner check.
+            var neighbors = new (int dx, int dy)[] { (0, -1), (0, 1), (-1, 0), (1, 0), (-1, -1), (1, -1), (-1, 1), (1, 1) };
             foreach (var (dx, dy) in neighbors)
             {
                 int nx = current.X + dx;
                 int ny = current.Y + dy;
                 var neighborPos = (nx, ny);
 
-                if (closedSet.Contains(neighborPos))
+                if (closedSet.Contains(neighborPos) || traps.Contains(neighborPos))
                     continue;
 
                 if (!IsWalkable(zone, nx, ny, npcs, zoneId))
@@ -153,10 +161,13 @@ public class Pathfinder
                 // A block only gives way if walking into it pushes it somewhere free, which
                 // depends on the direction. (The engine refuses otherwise, and the bot used to
                 // plan straight through push-block mazes and get stuck in them.)
-                if (IsDraggableAt(zone, nx, ny) && !IsFreeFloor(zone, nx + dx, ny + dy))
+                // Diagonally nothing is pushed.
+                if (IsDraggableAt(zone, nx, ny) && (dx != 0 && dy != 0 || !IsFreeFloor(zone, nx + dx, ny + dy)))
                     continue;
 
-                int tentativeGScore = gScore[currentPos] + 1;
+                // Pushing is a last resort: walking through a block moves it, often back
+                // where a puzzle needed it gone.
+                int tentativeGScore = gScore[currentPos] + (IsDraggableAt(zone, nx, ny) ? 20 : 1);
 
                 if (!gScore.ContainsKey(neighborPos) || tentativeGScore < gScore[neighborPos])
                 {
@@ -192,7 +203,7 @@ public class Pathfinder
             var tile = _gameData.Tiles[middleTile];
             // Block if it's an object (matching game engine's IsObject check)
             // Draggable objects can be pushed, so they're technically passable for pathfinding
-            if (tile.IsObject && !tile.IsDraggable)
+            if (tile.IsSolid && !tile.IsDraggable)
                 return false;
         }
 
@@ -222,8 +233,7 @@ public class Pathfinder
     private bool IsFreeFloor(Zone zone, int x, int y)
     {
         if (x < 0 || x >= zone.Width || y < 0 || y >= zone.Height) return false;
-        var id = zone.GetTile(x, y, 1);
-        return id == 0xFFFF || id < _gameData.Tiles.Count && !_gameData.Tiles[id].IsObject;
+        return zone.GetTile(x, y, 1) == 0xFFFF; // a block only moves into an empty square
     }
 
     /// <summary>
@@ -307,7 +317,7 @@ public class Pathfinder
 
     private static int Heuristic(int x1, int y1, int x2, int y2)
     {
-        return Math.Abs(x1 - x2) + Math.Abs(y1 - y2); // Manhattan distance
+        return Math.Max(Math.Abs(x1 - x2), Math.Abs(y1 - y2)); // diagonal steps cost one
     }
 
     private static List<(int X, int Y)> ReconstructPath(Dictionary<(int, int), (int, int)> cameFrom, (int, int) current)

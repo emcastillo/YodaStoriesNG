@@ -84,7 +84,10 @@ public class BotActions
 
         // Blocks are mostly monsters that were standing in the way; once they have moved on
         // they would wall the bot in for as long as it stays in this zone. Try again without.
-        if ((_currentPath == null || _currentPath.Count == 0) && _pathfinder.ForgetTemporaryBlocks())
+        // A remembered block on the square itself makes the pathfinder settle for a square
+        // nearby - fatal for a push or pull, which only works from the exact spot.
+        if ((_currentPath == null || _currentPath.Count == 0 || _currentPath[^1] != (x, y)) &&
+            _pathfinder.ForgetTemporaryBlocks())
             _currentPath = _pathfinder.FindPath(_state.CurrentZone, _state.PlayerX, _state.PlayerY, x, y,
                 _state.ZoneNPCs, _state.CurrentZoneId);
 
@@ -286,9 +289,11 @@ public class BotActions
         // Move to push position
         if (_state.PlayerX != pushFromX || _state.PlayerY != pushFromY)
         {
-            _actionState = BotActionState.MovingToPush;
             CurrentActionDescription = $"Moving to push object at ({x},{y})";
-            return MoveTo(pushFromX, pushFromY);
+            // MoveTo sets a plain walk; arriving must push, not just stop.
+            if (!MoveTo(pushFromX, pushFromY) || !PathEndsAt(pushFromX, pushFromY)) return false;
+            _actionState = BotActionState.MovingToPush;
+            return true;
         }
 
         // Already in position, push
@@ -571,13 +576,23 @@ public class BotActions
         if (_pulling)
             OnAction?.Invoke(BotActionType.Pull, 0, 0, _pushDirection.Value);
         else
-            OnAction?.Invoke(BotActionType.Move, _targetX, _targetY, _pushDirection.Value);
+            OnAction?.Invoke(BotActionType.Move, 0, 0, _pushDirection.Value); // by direction: walking here reused _targetX/Y
         _actionState = BotActionState.Completed;
         _pushDirection = null;
         _pulling = false;
     }
 
     private bool _pulling;
+
+    private bool PathEndsAt(int x, int y)
+    {
+        if (_currentPath is { Count: > 0 } path && path[^1] != (x, y))
+        {
+            _actionState = BotActionState.Completed;
+            return false;
+        }
+        return true;
+    }
 
     /// <summary>
     /// Drags the block at (x, y) one square in <paramref name="dir"/>: stand on its
@@ -594,9 +609,11 @@ public class BotActions
 
         if (_state.PlayerX != x + dx || _state.PlayerY != y + dy)
         {
-            _actionState = BotActionState.MovingToPush;
             CurrentActionDescription = $"Moving to pull object at ({x},{y})";
-            return MoveTo(x + dx, y + dy);
+            // MoveTo sets a plain walk; arriving must pull, not just stop.
+            if (!MoveTo(x + dx, y + dy) || !PathEndsAt(x + dx, y + dy)) return false;
+            _actionState = BotActionState.MovingToPush;
+            return true;
         }
 
         _actionState = BotActionState.Pushing;

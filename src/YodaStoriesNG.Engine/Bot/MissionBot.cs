@@ -180,7 +180,8 @@ public class MissionBot
         // those worlds only fight what is about to be a problem and keep moving otherwise.
         int threat = _worldGenerator.CurrentWorld is { Sectors.Count: > 0 } ? (_solver.HuntEnemies ? 15 : 3) : 6;
         var enemy = _solver.FindNearestEnemy();
-        if (enemy != null && enemy.DistanceTo(_state.PlayerX, _state.PlayerY) <= threat)
+        if (enemy != null && enemy.DistanceTo(_state.PlayerX, _state.PlayerY) <= threat &&
+            (!_solver.HuntEnemies || _state.CurrentZone == null || _solver.CanGetAt(enemy.X, enemy.Y)))
         {
             Console.WriteLine($"[BOT] Enemy detected: {GetNpcName(enemy)} at ({enemy.X},{enemy.Y})!");
             _currentState = BotState.Combat;
@@ -425,6 +426,8 @@ public class MissionBot
         if (enemy == null)
         {
             Console.WriteLine("[BOT] All enemies defeated");
+            // Most "unreachable" spots here were only an enemy standing in the way.
+            _solver.ForgetUnreachableHere();
             _currentState = BotState.ThinkingAboutObjective;
             _combatApproachAttempts = 0;
             return;
