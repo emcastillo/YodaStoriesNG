@@ -2137,21 +2137,29 @@ public unsafe partial class GameEngine : IDisposable
             var tile = _gameData.Tiles[objTile];
             Console.WriteLine($"Standing on tile {objTile}: floor={tile.IsFloor}, obj={tile.IsObject}, item={tile.IsItem}, char={tile.IsCharacter}");
 
-            // Auto-pickup Item tiles (not Objects that block movement)
-            if (tile.IsItem && !tile.IsObject)
+            // Auto-pickup loose items and weapons; solid objects still require interaction.
+            if ((tile.IsItem || tile.IsWeapon) && !tile.IsObject)
             {
                 var key = $"{_state.CurrentZoneId}_{newX}_{newY}_tile";
                 if (!_state.CollectedObjects.Contains(key))
                 {
                     // Pick up the item
-                    _state.AddItem(objTile);
+                    // A hotspot may already have awarded the same pickup on arrival.
+                    var awardedByHotspot = _state.IsObjectCollected(_state.CurrentZoneId, newX, newY) &&
+                        _state.CurrentZone.Objects.Any(o => o.Enabled && o.X == newX && o.Y == newY &&
+                            o.Argument == objTile && o.Type is ZoneObjectType.CrateItem or ZoneObjectType.CrateWeapon);
+                    if (!awardedByHotspot)
+                    {
+                        if (tile.IsWeapon) CollectWeapon(objTile);
+                        else _state.AddItem(objTile);
+                    }
                     _state.CollectedObjects.Add(key);
 
                     // Remove the tile from the map
                     _state.CurrentZone.SetTile(newX, newY, 1, 0xFFFF);
 
                     var itemName = GetTileName(objTile) ?? $"Item";
-                    _messages.ShowPickup(itemName);
+                    if (!awardedByHotspot) _messages.ShowPickup(itemName);
                     Console.WriteLine($"Auto-picked up tile item {objTile} ({itemName}) at ({newX},{newY})");
                     _sectorPuzzles?.OnPickedUp(objTile);
                     SyncSectorMission();
@@ -2533,16 +2541,8 @@ public unsafe partial class GameEngine : IDisposable
                     // Pick up weapon (if not already collected)
                     if (obj.Argument > 0 && !_state.IsObjectCollected(_state.CurrentZoneId, obj.X, obj.Y))
                     {
-                        // Add to weapons list if not already owned
-                        if (!_state.Weapons.Contains(obj.Argument))
-                        {
-                            _state.Weapons.Add(obj.Argument);
-                            InitializeWeaponAmmo(obj.Argument);
-                        }
-                        // Auto-equip the new weapon
-                        _state.CurrentWeaponIndex = _state.Weapons.IndexOf(obj.Argument);
-                        _state.SelectedWeapon = obj.Argument;
-                        PlayEquipSound(obj.Argument);
+                        // Walking over a pickup preserves the player's current selection.
+                        CollectWeapon(obj.Argument);
                         _state.MarkObjectCollected(_state.CurrentZoneId, obj.X, obj.Y);
                         var weaponName = GetTileName(obj.Argument) ?? $"Weapon";
                         var ammoState = _state.GetWeaponAmmo(obj.Argument);
