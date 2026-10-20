@@ -1270,8 +1270,16 @@ public class WorldGenerator
     {
         if (CurrentWorld == null || CurrentMission == null) return;
 
-        // The starting item is the first item needed in the puzzle chain
-        if (CurrentMission.PuzzleChain.Count > 0)
+        // Native worlds have two independent strains. PuzzleChain is sorted for
+        // display, so its first step need not be the strain Yoda supplies.
+        if (_gameData.GameType == GameType.YodaStories && CurrentWorld.Strain1.Count > 0 &&
+            CurrentWorld.Strain1[0] is { Item1: > 0 } firstPuzzle)
+        {
+            CurrentWorld.StartingItemId = firstPuzzle.Item1;
+        }
+
+        // The older generator uses a single ordered chain.
+        if (!CurrentWorld.StartingItemId.HasValue && CurrentMission.PuzzleChain.Count > 0)
         {
             var firstStep = CurrentMission.PuzzleChain[0];
             if (firstStep.RequiredItemId > 0)
