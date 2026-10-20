@@ -2510,7 +2510,8 @@ public unsafe partial class GameEngine : IDisposable
                             Console.WriteLine($"  Spawning at center ({spawnX},{spawnY})");
                         }
 
-                        LoadZone(destZoneId, spawnX, spawnY);
+                        LoadZone(destZoneId, spawnX, spawnY,
+                            enteredByPlane: obj.Type is ZoneObjectType.VehicleToSecondary or ZoneObjectType.VehicleToPrimary);
                         return;
                     }
                     break;
@@ -2747,9 +2748,8 @@ public unsafe partial class GameEngine : IDisposable
                             }
                         }
 
-                        _state.ArrivingByVehicle = byVehicle;
-                        LoadZone(destZoneId, spawnX, spawnY);
-                        _state.ArrivingByVehicle = false;
+                        LoadZone(destZoneId, spawnX, spawnY,
+                            enteredByPlane: obj.Type is ZoneObjectType.VehicleToSecondary or ZoneObjectType.VehicleToPrimary);
                     }
                     break;
 
