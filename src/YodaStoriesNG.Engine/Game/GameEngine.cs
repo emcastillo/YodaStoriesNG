@@ -107,6 +107,7 @@ public unsafe partial class GameEngine : IDisposable
         _state.Weapons.Add(newWeaponTile);
         _state.CurrentWeaponIndex = 0;
         _state.SelectedWeapon = newWeaponTile;
+        _state.SelectedItem = null;
 
         // Initialize ammo for the new weapon
         InitializeWeaponAmmo(newWeaponTile);
@@ -1466,9 +1467,8 @@ public unsafe partial class GameEngine : IDisposable
                         }
                     }
                     // Equip the new weapon
-                    _state.SelectedWeapon = _draggedItemId.Value;
+                    EquipWeapon(_draggedItemId.Value);
                     _messages.ShowMessage("Equipped weapon", MessageType.Info);
-                    PlayEquipSound(_draggedItemId.Value);
                 }
             }
             // Check if dropped on inventory
@@ -1779,6 +1779,22 @@ public unsafe partial class GameEngine : IDisposable
         }
     }
 
+    private void CollectWeapon(int weaponId)
+    {
+        if (!_state.Weapons.Contains(weaponId))
+            _state.Weapons.Add(weaponId);
+        InitializeWeaponAmmo(weaponId);
+    }
+
+    private void EquipWeapon(int weaponId)
+    {
+        CollectWeapon(weaponId);
+        _state.CurrentWeaponIndex = _state.Weapons.IndexOf(weaponId);
+        _state.SelectedWeapon = weaponId == 0 ? null : weaponId;
+        _state.SelectedItem = null;
+        if (weaponId != 0) PlayEquipSound(weaponId);
+    }
+
     private void ToggleWeapon()
     {
         if (_state.Weapons.Count == 0)
@@ -1789,6 +1805,7 @@ public unsafe partial class GameEngine : IDisposable
 
         _state.CurrentWeaponIndex = (_state.CurrentWeaponIndex + 1) % _state.Weapons.Count;
         var weaponId = _state.Weapons[_state.CurrentWeaponIndex];
+        EquipWeapon(weaponId);
 
         if (weaponId == 0)
         {
@@ -1797,8 +1814,6 @@ public unsafe partial class GameEngine : IDisposable
         }
         else
         {
-            _state.SelectedWeapon = weaponId;
-            PlayEquipSound(weaponId);
             var weaponName = GetTileName(weaponId) ?? $"Weapon";
             _messages.ShowMessage($"Equipped: {weaponName}", MessageType.Info);
         }
@@ -2641,6 +2656,10 @@ public unsafe partial class GameEngine : IDisposable
         if (_actionExecutor?.IsBusy == true || !_state.HeroVisible)
             return;
 
+        // Scripts can consume items without going through RemoveItem.
+        if (_state.SelectedItem.HasValue && !_state.HasItem(_state.SelectedItem.Value))
+            _state.SelectedItem = null;
+
         if (_state.SelectedItem.HasValue)
         {
             var usedItemId = _state.SelectedItem.Value;
@@ -2950,9 +2969,7 @@ public unsafe partial class GameEngine : IDisposable
                             _state.Weapons.Add(obj.Argument);
                             InitializeWeaponAmmo(obj.Argument);
                         }
-                        _state.CurrentWeaponIndex = _state.Weapons.IndexOf(obj.Argument);
-                        _state.SelectedWeapon = obj.Argument;
-                        PlayEquipSound(obj.Argument);
+                        EquipWeapon(obj.Argument);
                         _state.MarkObjectCollected(_state.CurrentZoneId, obj.X, obj.Y);
                         var weaponName = GetTileName(obj.Argument) ?? $"Weapon";
                         var ammoState = _state.GetWeaponAmmo(obj.Argument);
@@ -3370,8 +3387,7 @@ public unsafe partial class GameEngine : IDisposable
         }
 
         _state.CurrentWeaponIndex = (_state.CurrentWeaponIndex + 1) % _state.Weapons.Count;
-        _state.SelectedWeapon = _state.Weapons[_state.CurrentWeaponIndex];
-        PlayEquipSound(_state.SelectedWeapon.Value);
+        EquipWeapon(_state.Weapons[_state.CurrentWeaponIndex]);
     }
 
     private void PerformMeleeAttack()
