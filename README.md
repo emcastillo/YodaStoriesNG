@@ -72,6 +72,8 @@ What this adds on top of the original, or brings to platforms it never ran on:
 - **A mission bot** - press `B` and it plays the game for you.
 - **Saves that keep the whole world** - plain JSON, restored exactly rather than
   regenerated, with a built-in editor.
+- **Smooth movement** - optional: hero and enemies glide between tiles in eight directions
+  with a following camera. Off by default, under Config. [PLAYING.md](docs/PLAYING.md#smooth-movement)
 - **1x / 2x / 4x scaling** and rebindable keys.
 - **Six debug tools** for pulling the data file apart - see [Look inside it](#look-inside-it).
 
@@ -146,6 +148,14 @@ src/
   IndyNG.Engine/            a minimal .daw parse/palette testbed, not how you play Indy
 tools/                    capture harness, SZDD decompressors, palette extractors
 ```
+
+## Thanks
+
+- **Emilio Castillo** ([@emcastillo](https://github.com/emcastillo)) - Yoda mission-chain and
+  X-wing travel fixes with their audits, enemy animation frames, and smooth movement
+  ([#4](https://github.com/sp00nznet/YodaStoriesNG/pull/4),
+  [#5](https://github.com/sp00nznet/YodaStoriesNG/pull/5),
+  [#6](https://github.com/sp00nznet/YodaStoriesNG/pull/6)).
 
 ## Legal
 
