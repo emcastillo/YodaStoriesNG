@@ -357,7 +357,9 @@ public class ActionExecutor
             case ConditionOpcode.TileAtIs:
                 if (args.Count < 4 || _currentZone == null)
                     return false;
-                return _currentZone.GetTile(args[1], args[2], args[3]) == args[0];
+                // Script operands are signed 16-bit; tile slots store the same bits
+                // unsigned. In particular, -1 names the empty tile (0xFFFF).
+                return _currentZone.GetTile(args[1], args[2], args[3]) == unchecked((ushort)args[0]);
 
             // Takes no arguments - it asks whether THIS zone is solved.
             case ConditionOpcode.ZoneIsSolved:
@@ -525,7 +527,7 @@ public class ActionExecutor
             case ConditionOpcode.IsVariable:
                 if (args.Count < 4 || _currentZone == null)
                     return false;
-                return _currentZone.GetTile(args[1], args[2], args[3]) == args[0];
+                return _currentZone.GetTile(args[1], args[2], args[3]) == unchecked((ushort)args[0]);
 
             default:
                 // An unsupported condition cannot authorize an action.
