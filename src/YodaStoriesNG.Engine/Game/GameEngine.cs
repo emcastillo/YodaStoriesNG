@@ -56,6 +56,7 @@ public unsafe partial class GameEngine : IDisposable
     private double _playerWalkingTimer;
     private double _playerAnimationTimer;
     private int _playerAnimationFrame;
+    private double _attackAnimationDuration = 0.3;
 
     // Drag and drop state
     private bool _isDragging = false;
@@ -3276,7 +3277,7 @@ public unsafe partial class GameEngine : IDisposable
 
         // Trigger attack animation
         _state.IsAttacking = true;
-        _state.AttackTimer = 0.15;  // Shorter for shooting
+        _state.AttackTimer = _attackAnimationDuration = 0.15;  // Shorter for shooting
 
         // Calculate projectile direction
         double velX = 0, velY = 0;
@@ -3359,7 +3360,7 @@ public unsafe partial class GameEngine : IDisposable
 
         // Trigger attack animation
         _state.IsAttacking = true;
-        _state.AttackTimer = 0.3;
+        _state.AttackTimer = _attackAnimationDuration = 0.3;
 
         // Calculate primary attack position based on facing direction
         int targetX = _state.PlayerX;
@@ -4664,34 +4665,14 @@ public unsafe partial class GameEngine : IDisposable
         // Render player character
         RenderPlayer();
 
-        // Render attack animation if attacking
-        if (_state.IsAttacking && _state.SelectedWeapon.HasValue)
+        // Authored weapon frames already contain the hero and blade. Only attacks
+        // without a usable authored pose need the generic slash fallback.
+        if (_state.IsAttacking && CurrentWeaponPose() == null)
         {
             var playerScreenX = (int)((PlayerRenderPosition.X - ViewCameraX) * Data.Tile.Width * GameRenderer.Scale);
             var playerScreenY = (int)((PlayerRenderPosition.Y - ViewCameraY) * Data.Tile.Height * GameRenderer.Scale);
-            var direction = (int)_state.PlayerDirection;
-            var progress = _state.AttackTimer / 0.3;  // Normalized progress
-
-            // Get weapon animation tile based on weapon and direction
-            // Light Saber is Character 14, other weapons are Characters 9-13
-            int weaponCharIndex = GetWeaponCharacterIndex(_state.SelectedWeapon.Value);
-            int weaponTile = GetWeaponTileForDirection(weaponCharIndex, _state.PlayerDirection);
-
-            if (weaponTile > 0)
-            {
-                _renderer.RenderWeaponAttack(weaponTile, playerScreenX, playerScreenY, direction, progress);
-            }
-            else
-            {
-                _renderer.RenderMeleeSlash(playerScreenX, playerScreenY, direction, progress);
-            }
-        }
-        else if (_state.IsAttacking)
-        {
-            // Unarmed attack
-            var playerScreenX = (int)((PlayerRenderPosition.X - ViewCameraX) * Data.Tile.Width * GameRenderer.Scale);
-            var playerScreenY = (int)((PlayerRenderPosition.Y - ViewCameraY) * Data.Tile.Height * GameRenderer.Scale);
-            _renderer.RenderMeleeSlash(playerScreenX, playerScreenY, (int)_state.PlayerDirection, _state.AttackTimer / 0.3);
+            _renderer.RenderMeleeSlash(playerScreenX, playerScreenY, (int)_state.PlayerDirection,
+                _state.AttackTimer / _attackAnimationDuration);
         }
 
         // Render projectiles
@@ -4901,6 +4882,15 @@ public unsafe partial class GameEngine : IDisposable
         // Skip rendering if hero is hidden (by HideHero script instruction)
         if (!_state.HeroVisible)
             return;
+
+        if (CurrentWeaponPose() is { } attack)
+        {
+            var position = PlayerRenderPosition;
+            _renderer!.RenderSprite(attack.Body, position.X, position.Y, ViewCameraX, ViewCameraY);
+            if (attack.Extension is { } extension)
+                _renderer.RenderSprite(extension, position.X + attack.OffsetX, position.Y + attack.OffsetY, ViewCameraX, ViewCameraY);
+            return;
+        }
 
         // Find hero character for rendering
         // In Yoda Stories, the hero (Luke) is typically character 0 or has Hero type
@@ -5290,8 +5280,7 @@ public unsafe partial class GameEngine : IDisposable
     /// A weapon character's first frame ends in that tile (WebFun: frames[0].extensionRight).
     /// </summary>
     private int WeaponCharacterFor(int weaponTile) =>
-        _gameData?.Characters.FindIndex(c =>
-            c.Weapon != null && c.Frames.ExtensionRight.Length > 0 && c.Frames.ExtensionRight[0] == weaponTile) ?? -1;
+        _gameData == null ? -1 : WeaponAnimation.FindCharacter(_gameData, weaponTile);
 
     /// <summary>A weapon character's CHWP reference is the sound it makes when used.</summary>
     private void PlayWeaponSound(int weaponCharacterId)
@@ -5318,15 +5307,11 @@ public unsafe partial class GameEngine : IDisposable
         });
     }
 
-    private int GetWeaponCharacterIndex(int weaponTileId)
-    {
-        // Map weapon tile IDs to character indices
-        // Lightsabers use Character 14 "Light Saber" for attack animation
-        if (weaponTileId == TILE_BASIC_LIGHTSABER) return 14;     // Basic lightsaber (tile 18)
-        if (weaponTileId == TILE_UPGRADED_LIGHTSABER) return 14;  // Upgraded lightsaber (tile 510)
-        if (weaponTileId == TILE_THE_FORCE) return 14;            // The Force (tile 511) - uses same animation
-        return -1;
-    }
+    private WeaponPose? CurrentWeaponPose() =>
+        _state.IsAttacking && _state.SelectedWeapon.HasValue && _gameData != null
+            ? WeaponAnimation.Resolve(_gameData, WeaponCharacterFor(_state.SelectedWeapon.Value), _state.PlayerDirection,
+                Math.Clamp(1 - _state.AttackTimer / _attackAnimationDuration, 0, 1))
+            : null;
 
     /// <summary>
     /// Checks if the given weapon is a ranged weapon (can attack from a distance).
@@ -5335,28 +5320,6 @@ public unsafe partial class GameEngine : IDisposable
     {
         // The Force allows attacking from a distance
         return weaponTileId == TILE_THE_FORCE;
-    }
-
-    /// <summary>
-    /// Gets the weapon attack tile for a direction.
-    /// Luke's lightsaber attack frames at atlas 241x1472 = tile 2122+
-    /// </summary>
-    private int GetWeaponTileForDirection(int weaponCharIndex, Direction direction)
-    {
-        if (weaponCharIndex == 14)  // Lightsaber
-        {
-            // Luke's lightsaber attack tiles from atlas 241x1472 = tile 2122
-            // Sequential tiles: 2122, 2123 for up/down and left/right
-            return direction switch
-            {
-                Direction.Up => 2122,
-                Direction.Down => 2123,
-                Direction.Right => 2124,
-                Direction.Left => 2125,
-                _ => 2122
-            };
-        }
-        return -1;
     }
 
     /// <summary>
