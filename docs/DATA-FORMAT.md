@@ -301,9 +301,9 @@ These are the raw material the world generator chains together into a mission. S
 
 ## `CHAR`, `CHWP`, `CAUX` - characters
 
-`CHAR` defines each character: name, type (hero, enemy, friendly), and the tile IDs of its
-animation frames - eight walking frames per direction, plus attack frames. Yoda Stories has
-77 characters.
+`CHAR` defines each character: name, type (hero, enemy, friendly), and three animation
+frames, each containing eight tile IDs. The renderer uses slots 0, 1, 3, and 6 for up,
+down, left, and right. Yoda Stories has 77 characters.
 
 `CHWP` and `CAUX` are lists keyed by character index, not arrays in character order. Each
 entry starts with an `int16` index, and an index of `-1` ends the list:

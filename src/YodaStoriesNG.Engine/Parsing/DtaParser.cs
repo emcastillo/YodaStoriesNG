@@ -712,26 +712,33 @@ public class DtaParser
             ? (CharacterType)BitConverter.ToUInt16(data, 26)
             : InferCharacterType(character.Name, index);
 
-        // Directional tile IDs start at frameBase (6 directions x 2 bytes)
+        // CHAR stores three animation frames, each with eight tile slots. The game uses
+        // slots 0, 1, 3, and 6 for up, down, left, and right respectively. Slot 7 of the
+        // first frame is the inventory icon for weapon characters.
         var frames = new CharacterFrames();
 
-        // The tile IDs for different directions
-        var tileUp = BitConverter.ToUInt16(data, frameBase);
-        var tileUpRight = BitConverter.ToUInt16(data, frameBase + 2);
-        var tileRight = BitConverter.ToUInt16(data, frameBase + 4);
-        var tileDownRight = BitConverter.ToUInt16(data, frameBase + 6);
-        var tileDown = BitConverter.ToUInt16(data, frameBase + 8);
-        var tileDownLeft = BitConverter.ToUInt16(data, frameBase + 10);
+        ushort ReadFrameTile(int frame, int slot) =>
+            BitConverter.ToUInt16(data, frameBase + frame * 16 + slot * 2);
 
-        // Last slot of the first frame: for a weapon character, the inventory tile it is
-        // equipped from (WebFun: frames[0].extensionRight).
-        frames.ExtensionRight = new[] { BitConverter.ToUInt16(data, frameBase + 14) };
+        frames.WalkUp = new[]
+        {
+            ReadFrameTile(0, 0), ReadFrameTile(1, 0), ReadFrameTile(2, 0)
+        };
+        frames.WalkDown = new[]
+        {
+            ReadFrameTile(0, 1), ReadFrameTile(1, 1), ReadFrameTile(2, 1)
+        };
+        frames.WalkLeft = new[]
+        {
+            ReadFrameTile(0, 3), ReadFrameTile(1, 3), ReadFrameTile(2, 3)
+        };
+        frames.WalkRight = new[]
+        {
+            ReadFrameTile(0, 6), ReadFrameTile(1, 6), ReadFrameTile(2, 6)
+        };
 
-        // Map to our 4-direction system
-        frames.WalkUp = new ushort[] { tileUp, tileUp, tileUp };
-        frames.WalkDown = new ushort[] { tileDown, tileDown, tileDown };
-        frames.WalkLeft = new ushort[] { tileDownLeft, tileDownLeft, tileDownLeft };
-        frames.WalkRight = new ushort[] { tileRight, tileRight, tileRight };
+        // Last slot of the first frame is the inventory tile for weapon characters.
+        frames.ExtensionRight = new[] { ReadFrameTile(0, 7) };
 
         character.Frames = frames;
 

@@ -4772,13 +4772,12 @@ public unsafe partial class GameEngine : IDisposable
                     _ => character.Frames.WalkDown
                 };
 
-                if (frames != null && frames.Length > 0 && frames[0] != 0)
+                if (frames != null && frames.Length > 0)
                 {
-                    var frameIndex = Math.Min(npc.AnimationFrame, frames.Length - 1);
-                    var tileId = frames[frameIndex];
-                    if (tileId < _gameData.Tiles.Count)
+                    var tileId = GetUsableAnimationFrame(frames, npc.AnimationFrame);
+                    if (tileId.HasValue)
                     {
-                        _renderer!.RenderSprite(tileId, npc.X, npc.Y, _state.CameraX, _state.CameraY);
+                        _renderer!.RenderSprite(tileId.Value, npc.X, npc.Y, _state.CameraX, _state.CameraY);
                     }
                 }
             }
@@ -4788,6 +4787,24 @@ public unsafe partial class GameEngine : IDisposable
                 _renderer!.RenderSprite(npc.CharacterId, npc.X, npc.Y, _state.CameraX, _state.CameraY);
             }
         }
+    }
+
+    // Some CHAR records leave unused animation slots as tile 0 or 0xFFFF. Selecting
+    // those slots makes a moving character disappear for that animation frame.
+    private ushort? GetUsableAnimationFrame(ushort[] frames, int preferredFrame)
+    {
+        if (_gameData == null || frames.Length == 0)
+            return null;
+
+        preferredFrame = Math.Clamp(preferredFrame, 0, frames.Length - 1);
+        for (int offset = 0; offset < frames.Length; offset++)
+        {
+            var tileId = frames[(preferredFrame + offset) % frames.Length];
+            if (tileId > 0 && tileId < _gameData.Tiles.Count)
+                return tileId;
+        }
+
+        return null;
     }
 
     private void RenderProjectiles()
