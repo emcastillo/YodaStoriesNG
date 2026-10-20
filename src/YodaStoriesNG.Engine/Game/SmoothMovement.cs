@@ -89,6 +89,7 @@ public unsafe partial class GameEngine
     {
         var zone = _state.CurrentZone;
         if (zone == null || x < 0 || y < 0 || x >= zone.Width || y >= zone.Height) return false;
+        if (IsGroundBlocked(zone, x, y)) return false;
         if (actor != null && x == _state.PlayerX && y == _state.PlayerY) return false;
         if (MovementReserved(x, y, actor)) return false;
         if (_state.ZoneNPCs.Any(n => n != actor && n.IsEnabled && n.IsAlive && n.X == x && n.Y == y &&
@@ -120,7 +121,11 @@ public unsafe partial class GameEngine
         // Pushes are validated now and applied by the original movement path at arrival.
         int tile = _state.CurrentZone.GetTile(Math.Clamp(x + dx, 0, _state.CurrentZone.Width - 1),
             Math.Clamp(y + dy, 0, _state.CurrentZone.Height - 1), 1);
-        bool push = !diagonal && tile < _gameData!.Tiles.Count && _gameData.Tiles[tile].IsDraggable &&
+        bool push = !diagonal && x + dx >= 0 && y + dy >= 0 &&
+            x + dx < _state.CurrentZone.Width && y + dy < _state.CurrentZone.Height &&
+            !IsGroundBlocked(_state.CurrentZone, x + dx, y + dy) &&
+            tile < _gameData!.Tiles.Count && _gameData.Tiles[tile].IsDraggable &&
+            _state.CurrentZone.GetTile(x + dx * 2, y + dy * 2, 1) == ushort.MaxValue &&
             SmoothCellClear(x + dx * 2, y + dy * 2) && !MovementReserved(x + dx, y + dy);
         if (!clear && !push || !diagonal && IsCardinalInteraction(x + dx, y + dy) && !push)
         {

@@ -1999,6 +1999,12 @@ public unsafe partial class GameEngine : IDisposable
             return;
         }
 
+        if (IsGroundBlocked(_state.CurrentZone, newX, newY))
+        {
+            BumpInto(newX, newY);
+            return;
+        }
+
         // Check collision with middle layer tile
         var middleTile = _state.CurrentZone.GetTile(newX, newY, 1);
         if (middleTile != 0xFFFF && middleTile < _gameData!.Tiles.Count)
@@ -2019,7 +2025,7 @@ public unsafe partial class GameEngine : IDisposable
                     // Only into an empty square, as the original (WebFun hero.ts _doDrag): a block
                     // pushed onto an item used to overwrite it.
                     var destTile = _state.CurrentZone.GetTile(pushX, pushY, 1);
-                    if (destTile == 0xFFFF)
+                    if (!IsGroundBlocked(_state.CurrentZone, pushX, pushY) && destTile == 0xFFFF)
                     {
                         // Push the block
                         MarkObjectsMoved(_state.CurrentZone);
@@ -2224,11 +2230,23 @@ public unsafe partial class GameEngine : IDisposable
     /// <summary>
     /// Checks if a position is walkable (not blocked by walls or objects).
     /// </summary>
+    private bool IsGroundBlocked(Zone zone, int x, int y)
+    {
+        int ground = zone.GetTile(x, y, 0);
+        if (ground >= _gameData!.Tiles.Count || !_gameData.Tiles[ground].IsObject) return false;
+        // A walkable surface such as a bridge can cover otherwise impassable ground.
+        int surface = zone.GetTile(x, y, 1);
+        return surface >= _gameData.Tiles.Count || !_gameData.Tiles[surface].IsFloor ||
+            _gameData.Tiles[surface].IsObject;
+    }
+
     private bool IsSpawnPositionWalkable(int x, int y, Zone zone)
     {
         // Check bounds
         if (x < 0 || x >= zone.Width || y < 0 || y >= zone.Height)
             return false;
+
+        if (IsGroundBlocked(zone, x, y)) return false;
 
         // Check middle layer tile
         var middleTile = zone.GetTile(x, y, 1);
@@ -3852,6 +3870,8 @@ public unsafe partial class GameEngine : IDisposable
         if (x < 1 || x >= zone.Width - 1 || y < 1 || y >= zone.Height - 1)
             return false;
 
+        if (IsGroundBlocked(zone, x, y)) return false;
+
         var middleTile = zone.GetTile(x, y, 1);
         if (middleTile != 0xFFFF && middleTile < _gameData!.Tiles.Count)
         {
@@ -3873,6 +3893,8 @@ public unsafe partial class GameEngine : IDisposable
         // Must be within zone bounds
         if (x < 0 || x >= zone.Width || y < 0 || y >= zone.Height)
             return false;
+
+        if (IsGroundBlocked(zone, x, y)) return false;
 
         // Check layer 1 (middle layer) for blocking objects - this is where walls/objects are
         var middleTileId = zone.GetTile(x, y, 1);
@@ -4648,6 +4670,8 @@ public unsafe partial class GameEngine : IDisposable
             y < 0 || y >= _state.CurrentZone.Height)
             return false;
 
+        if (IsGroundBlocked(_state.CurrentZone, x, y)) return false;
+
         // Check collision with player
         if (_smoothMovement && MovementReserved(x, y, npc)) return false;
         if (x == _state.PlayerX && y == _state.PlayerY)
@@ -5273,6 +5297,7 @@ public unsafe partial class GameEngine : IDisposable
     {
         var zone = _state.CurrentZone;
         if (zone == null || x < 0 || y < 0 || x >= zone.Width || y >= zone.Height) return false;
+        if (IsGroundBlocked(zone, x, y)) return false;
         var t = zone.GetTile(x, y, 1);
         if (t != 0xFFFF && (t >= _gameData!.Tiles.Count || _gameData.Tiles[t].IsSolid)) return false;
         return !_state.ZoneNPCs.Any(n => n.IsEnabled && n.IsAlive && n.X == x && n.Y == y);
