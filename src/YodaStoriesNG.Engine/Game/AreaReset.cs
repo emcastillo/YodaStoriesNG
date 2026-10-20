@@ -96,6 +96,7 @@ public unsafe partial class GameEngine
     {
         ResetUnsolvedArea();
         _initialAreas.Clear();
+        _doorReturnPoints.Clear();
         _areasWithMovedObjects.Clear();
     }
 }

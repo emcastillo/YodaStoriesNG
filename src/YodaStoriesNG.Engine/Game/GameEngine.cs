@@ -2415,6 +2415,9 @@ public unsafe partial class GameEngine : IDisposable
 
                 case ZoneObjectType.DoorEntrance:
                 case ZoneObjectType.DoorExit:
+                    TravelThroughDoor(obj);
+                    return;
+
                 case ZoneObjectType.VehicleToSecondary:
                 case ZoneObjectType.VehicleToPrimary:
                 case ZoneObjectType.Teleporter:
@@ -2688,11 +2691,14 @@ public unsafe partial class GameEngine : IDisposable
                     }
                     break;
 
+                case ZoneObjectType.DoorEntrance:
+                case ZoneObjectType.DoorExit:
+                    TravelThroughDoor(obj);
+                    return;
+
                 case ZoneObjectType.Teleporter:
                 case ZoneObjectType.VehicleToSecondary:
                 case ZoneObjectType.VehicleToPrimary:
-                case ZoneObjectType.DoorEntrance:
-                case ZoneObjectType.DoorExit:
                     // Handle 65535 (0xFFFF) as "return to previous zone"
                     int destZoneId = obj.Argument;
                     if (destZoneId == 65535 || destZoneId == -1)
