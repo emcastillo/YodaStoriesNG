@@ -4742,6 +4742,9 @@ public unsafe partial class GameEngine : IDisposable
         // Render projectiles
         RenderProjectiles();
 
+        // Upper scenery occludes actors and effects beneath it.
+        _renderer.RenderZoneRoof(_state.CurrentZone, ViewCameraX, ViewCameraY);
+
         // Render script viewer highlights (if viewing current zone)
         if (_scriptViewer?.IsOpen == true)
         {

@@ -477,13 +477,16 @@ public unsafe class GameRenderer : IDisposable
         SDL.SetRenderDrawColor(_renderer, 0, 0, 0, 255);
         SDL.RenderClear(_renderer);
 
-        // Render tile layers
-        for (int layer = 0; layer < 3; layer++)
+        // Roofs are drawn after actors so walking underneath does not put the hero on top.
+        for (int layer = 0; layer < 2; layer++)
         {
             RenderTileLayer(zone, layer, cameraX, cameraY);
         }
 
     }
+
+    public void RenderZoneRoof(Zone zone, double cameraX, double cameraY) =>
+        RenderTileLayer(zone, 2, cameraX, cameraY);
 
     private void RenderTileLayer(Zone zone, int layer, double cameraX, double cameraY)
     {
