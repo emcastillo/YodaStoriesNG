@@ -52,6 +52,8 @@ public unsafe class MenuBar : IMenuBar
     public event Action? OnEnableBot;
     public event Action? OnDisableBot;
     public event Action<int>? OnSetScale;
+    public event Action? OnToggleSmoothMovement;
+    public bool SmoothMovement { get; set; }
     public event Action? OnShowKeyboardControls;
     public event Action? OnShowControllerControls;
     public event Action? OnSelectDataFile;
@@ -111,6 +113,7 @@ public unsafe class MenuBar : IMenuBar
                     new Item("Graphics: 1x Scale (F5)", () => OnSetScale?.Invoke(1)),
                     new Item("Graphics: 2x Scale (F6)", () => OnSetScale?.Invoke(2)),
                     new Item("Graphics: 4x Scale (F7)", () => OnSetScale?.Invoke(4)),
+                    new Item("Smooth Movement: Off", () => OnToggleSmoothMovement?.Invoke()),
                     Divider(),
                     new Item("Keyboard Controls", () => OnShowKeyboardControls?.Invoke()),
                     new Item("Controller Controls", () => OnShowControllerControls?.Invoke()),
@@ -398,7 +401,7 @@ public unsafe class MenuBar : IMenuBar
             }
 
             byte shade = i == _hoveredItem ? (byte)255 : (byte)200;
-            _font.RenderText(_renderer, menu.Items[i].Label, menu.X + 10, y + 5, 1, shade, shade, shade, 255);
+            _font.RenderText(_renderer, (menu.Items[i].Label.StartsWith("Smooth Movement:") ? $"Smooth Movement: {(SmoothMovement ? "On" : "Off")}" : menu.Items[i].Label), menu.X + 10, y + 5, 1, shade, shade, shade, 255);
         }
     }
 

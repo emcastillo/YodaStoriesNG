@@ -18,7 +18,7 @@ generates another one.
    your eight-by-seven inventory grid below. It is empty. It will not stay empty.
 4. **Press `O`.** The current objective prints as a message - what you are looking for and
    roughly where.
-5. **Walk.** `WASD` or the arrow keys. One tap is one tile.
+5. **Walk.** `WASD` or the arrow keys. One tap is one tile. Enable **Config → Smooth Movement** to glide between tiles and move diagonally.
 6. **Press `F` if the zone is dull.** It jumps you to the next zone that actually has NPCs
    or items in it. This is a debug shortcut, and it is the fastest way to see the game
    working.
@@ -36,6 +36,18 @@ generates another one.
 ![R2-D2 giving a hint](shots/r2d2-help.png)
 
 ---
+
+## Smooth movement
+
+Enable **Config → Smooth Movement**, or **Smooth Movement** in the controller pause menu.
+The choice is remembered between launches and is off by default. It applies to both the
+player and enemies. Hold movement keys or the D-pad to keep walking; two directions move
+diagonally, and the analog stick controls walking speed. Releasing input finishes the
+current tile step. Diagonals have the same overall speed and cannot cut through corners.
+
+Pushing, pulling, boarding, and entering doors use a cardinal approach. Actions requested
+while walking happen at the next tile center. A mode change takes effect when active
+steps finish. Saves keep committed tile positions, so loading starts at a tile center.
 
 ## Keyboard
 

@@ -87,6 +87,20 @@ public class SectorPuzzles
         }
     }
 
+    /// <summary>Whether approaching this tile invokes a generated NPC interaction.</summary>
+    public bool IsBumpTarget(int x, int y)
+    {
+        if (Sector is not { } sector || _state.CurrentZone is not { } zone) return false;
+        if (sector.Type == ZoneType.Town)
+            return _world.Mission?.GoalPuzzle != null &&
+                zone.Objects.Any(h => h.X == x && h.Y == y && h.Type == SpawnLocation) &&
+                !zone.Actions.Any(a => a.Conditions.Any(c => c.Opcode == ConditionOpcode.Bump &&
+                    c.Arguments.Count > 1 && c.Arguments[0] == x && c.Arguments[1] == y));
+        return sector.PuzzleIndex >= 0 && zone.GetTile(x, y, 1) == sector.Npc &&
+            zone.Objects.Any(h => h.X == x && h.Y == y && h.Type == SpawnLocation && h.Enabled) &&
+            PuzzlesFor(sector).Item1 != null;
+    }
+
     /// <summary>Bumping (x, y). Returns true if it was the sector's NPC, which then spoke.</summary>
     public bool Bump(int x, int y)
     {

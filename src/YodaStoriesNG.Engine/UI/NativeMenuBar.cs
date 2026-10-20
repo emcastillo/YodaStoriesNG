@@ -76,6 +76,7 @@ public unsafe class NativeMenuBar : IMenuBar
     private const int ID_CONFIG_CONTROLLER = 3005;
     private const int ID_CONFIG_SELECT_DATA = 3006;
     private const int ID_CONFIG_HIDE_MENU = 3007;
+    private const int ID_CONFIG_SMOOTH_MOVEMENT = 3008;
 
     private const int ID_ABOUT_ABOUT = 4001;
     private const int ID_ABOUT_HIGHSCORES = 4002;
@@ -97,6 +98,23 @@ public unsafe class NativeMenuBar : IMenuBar
     public event Action? OnEnableBot;
     public event Action? OnDisableBot;
     public event Action<int>? OnSetScale;
+    public event Action? OnToggleSmoothMovement;
+    [DllImport("user32.dll")]
+    private static extern uint CheckMenuItem(IntPtr menu, uint id, uint flags);
+    private bool _smoothMovement;
+    public bool SmoothMovement
+    {
+        get => _smoothMovement;
+        set
+        {
+            _smoothMovement = value;
+            if (OperatingSystem.IsWindows() && _hMenu != IntPtr.Zero)
+            {
+                CheckMenuItem(_hMenu, ID_CONFIG_SMOOTH_MOVEMENT, value ? 0x00000008u : 0u);
+                DrawMenuBar(_hWnd);
+            }
+        }
+    }
     public event Action? OnShowKeyboardControls;
     public event Action? OnShowControllerControls;
     public event Action? OnSelectDataFile;
@@ -119,7 +137,8 @@ public unsafe class NativeMenuBar : IMenuBar
     public event Action? OnShowAbout;
     public event Action? OnShowHighScores;
 
-    public bool IsMenuOpen => false; // The OS owns the dropdown, and the game keeps running under it
+    public bool IsMenuOpen { get; private set; }
+    public event Action? OnMenuActivity;
 
     public NativeMenuBar()
     {
@@ -197,6 +216,7 @@ public unsafe class NativeMenuBar : IMenuBar
         AppendMenuW(configMenu, MF_STRING, (UIntPtr)ID_CONFIG_SCALE_1X, "Graphics: 1x Scale (F5)");
         AppendMenuW(configMenu, MF_STRING, (UIntPtr)ID_CONFIG_SCALE_2X, "Graphics: 2x Scale (F6)");
         AppendMenuW(configMenu, MF_STRING, (UIntPtr)ID_CONFIG_SCALE_4X, "Graphics: 4x Scale (F7)");
+        AppendMenuW(configMenu, MF_STRING, (UIntPtr)ID_CONFIG_SMOOTH_MOVEMENT, "Smooth Movement");
         AppendMenuW(configMenu, MF_SEPARATOR, UIntPtr.Zero, "");
         AppendMenuW(configMenu, MF_STRING, (UIntPtr)ID_CONFIG_KEYBOARD, "Keyboard Controls");
         AppendMenuW(configMenu, MF_STRING, (UIntPtr)ID_CONFIG_CONTROLLER, "Controller Controls");
@@ -226,6 +246,11 @@ public unsafe class NativeMenuBar : IMenuBar
 
     private IntPtr WndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
     {
+        if (msg is 0x0211 or 0x0212) // WM_ENTERMENULOOP / WM_EXITMENULOOP
+        {
+            IsMenuOpen = msg == 0x0211;
+            OnMenuActivity?.Invoke();
+        }
         if (msg == WM_COMMAND)
         {
             int commandId = (int)(wParam.ToInt64() & 0xFFFF);
@@ -300,6 +325,9 @@ public unsafe class NativeMenuBar : IMenuBar
                 return true;
 
             // Config menu
+            case ID_CONFIG_SMOOTH_MOVEMENT:
+                OnToggleSmoothMovement?.Invoke();
+                return true;
             case ID_CONFIG_SCALE_1X:
                 OnSetScale?.Invoke(1);
                 return true;

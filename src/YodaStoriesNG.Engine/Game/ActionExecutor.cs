@@ -90,6 +90,7 @@ public class ActionExecutor
     // Event for displaying dialogue
     public event Action<string, string>? OnDialogue;
     public event Action<string>? OnMessage;
+    public event System.Action? OnHeroRelocated;
     public event Action<int>? OnPlaySound;
 
     public ActionExecutor(GameData gameData, GameState state)
@@ -559,6 +560,7 @@ public class ActionExecutor
             case InstructionOpcode.MoveHeroTo:
                 if (args.Count >= 2)
                 {
+                    OnHeroRelocated?.Invoke();
                     _state.PlayerX = args[0];
                     _state.PlayerY = args[1];
                     // The last placement wins: a flight ends by setting the hero on the plane.
@@ -571,6 +573,7 @@ public class ActionExecutor
             case InstructionOpcode.MoveHeroBy:
                 if (args.Count >= 2)
                 {
+                    OnHeroRelocated?.Invoke();
                     _state.PlayerX += args[0];
                     _state.PlayerY += args[1];
                 }
