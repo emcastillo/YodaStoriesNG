@@ -3095,6 +3095,9 @@ public unsafe partial class GameEngine : IDisposable
                         // Check if mission is complete
                         if (mission != null && mission.IsCompleted)
                         {
+                            // This mission has already been acknowledged by Yoda or its win script.
+                            if (_state.IsGameWon) return true;
+
                             // Mission complete! Increment counter
                             _state.GamesWon++;
                             PlayYodaSound(YodaYouWin);
