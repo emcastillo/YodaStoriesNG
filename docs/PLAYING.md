@@ -63,7 +63,7 @@ steps finish. Saves keep committed tile positions, so loading starts at a tile c
 | Key | Action |
 |---|---|
 | `W` `A` `S` `D` / arrow keys | Move one tile. Walking into a pushable block pushes it. |
-| `Shift` + direction | Pull a block instead of pushing it. |
+| `Shift` + direction | Pull an adjacent block by stepping away from it. For a block on your right, hold `Shift` and move left. |
 | `Space` | Use the selected item, talk to whoever is in front of you, or attack. |
 | `Tab` | Cycle to the next weapon. |
 | `1`-`9`, `0` | Select inventory slot 1-10, relative to the current scroll position. |

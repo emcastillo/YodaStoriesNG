@@ -1893,9 +1893,15 @@ public unsafe partial class GameEngine : IDisposable
 
     private bool IsShiftHeld()
     {
-        // Check if Shift key is held using SDL
-        var modState = SDL.GetModState();
-        return (modState & SDLKeymod.Shift) != 0;
+        // Read the physical keys as well as SDL's modifier cache. Window/menu event
+        // handling can leave the cache behind the keyboard state on some platforms.
+        int count;
+        var keys = SDL.GetKeyboardState(&count);
+        int left = (int)SDL.GetScancodeFromKey((int)SDLKeyCode.Lshift);
+        int right = (int)SDL.GetScancodeFromKey((int)SDLKeyCode.Rshift);
+        return left >= 0 && left < count && keys[left] != 0 ||
+            right >= 0 && right < count && keys[right] != 0 ||
+            (SDL.GetModState() & SDLKeymod.Shift) != 0;
     }
 
     /// <summary>

@@ -20,6 +20,8 @@ public unsafe partial class GameEngine
     private double _bumpCooldown;
     private bool _smoothInputVertical;
     private Func<(int X, int Y, double Strength)>? _smoothInputSource;
+    private Func<bool>? _smoothPullSource;
+    private bool ReadPullInput() => _smoothPullSource?.Invoke() ?? (_renderer != null && IsShiftHeld());
     private bool MovementModePending => _smoothMovement != _smoothMovementRequested;
     private bool MovementUIBlocked => !_movementFocused || _menuBar?.IsMenuOpen == true ||
         _controllerOverlay?.IsOpen == true || _controlsWindow?.IsOpen == true || _state.IsPaused;
@@ -204,17 +206,17 @@ public unsafe partial class GameEngine
         if (_suppressHeldMovement || _bot?.IsRunning == true || _playerStep != null || MovementModePending) return;
         _inputMoveStrength = input.Strength;
         int dx = input.X, dy = input.Y;
-        if (!RequestSmoothPlayerStep(dx, dy, _state.PlayerDirection, _renderer != null && IsShiftHeld()) && dx != 0 && dy != 0)
+        if (!RequestSmoothPlayerStep(dx, dy, _state.PlayerDirection, ReadPullInput()) && dx != 0 && dy != 0)
         {
             // Digital ties choose horizontal. Analog input uses its dominant axis.
             bool vertical = _smoothInputVertical;
             if (vertical)
             {
-                if (!RequestSmoothPlayerStep(0, dy, _state.PlayerDirection, _renderer != null && IsShiftHeld()))
-                    RequestSmoothPlayerStep(dx, 0, _state.PlayerDirection, _renderer != null && IsShiftHeld());
+                if (!RequestSmoothPlayerStep(0, dy, _state.PlayerDirection, ReadPullInput()))
+                    RequestSmoothPlayerStep(dx, 0, _state.PlayerDirection, ReadPullInput());
             }
-            else if (!RequestSmoothPlayerStep(dx, 0, _state.PlayerDirection, _renderer != null && IsShiftHeld()))
-                RequestSmoothPlayerStep(0, dy, _state.PlayerDirection, _renderer != null && IsShiftHeld());
+            else if (!RequestSmoothPlayerStep(dx, 0, _state.PlayerDirection, ReadPullInput()))
+                RequestSmoothPlayerStep(0, dy, _state.PlayerDirection, ReadPullInput());
         }
         _inputMoveStrength = 1;
     }
@@ -238,7 +240,10 @@ public unsafe partial class GameEngine
             remaining = Math.Max(0, step.Elapsed - step.Duration);
             _playerStep = null;
             _committingSmoothStep = true;
-            try { TryMovePlayer(step.ToX - step.FromX, step.ToY - step.FromY, step.Facing, step.Pull); }
+            // A modifier pressed during a smooth step should still pull the block
+            // adjacent to its starting tile. Diagonal steps never pull diagonally.
+            bool pull = step.Pull || (step.FromX == step.ToX || step.FromY == step.ToY) && ReadPullInput();
+            try { TryMovePlayer(step.ToX - step.FromX, step.ToY - step.FromY, step.Facing, pull); }
             finally { _committingSmoothStep = false; }
             if (_actionExecutor?.IsBusy == true || !_state.HeroVisible) break;
             if (_pendingMovementAction is { } action)
