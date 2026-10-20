@@ -37,6 +37,13 @@ generates another one.
 
 ---
 
+## Movable puzzle objects
+
+If you move blocks, boulders, or other puzzle objects and leave an **unsolved** area,
+the area returns to its initial layout and local puzzle state. Re-enter to try again.
+Solved areas retain their completed state. Collected items stay in your inventory and
+are not recreated by the reset.
+
 ## Smooth movement
 
 Enable **Config → Smooth Movement**, or **Smooth Movement** in the controller pause menu.

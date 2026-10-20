@@ -443,6 +443,8 @@ public unsafe partial class GameEngine : IDisposable
             Console.WriteLine($"Reloading game: {gameName} from {dataFilePath}");
 
             // Update game data
+            CancelSmoothMovement();
+            ResetAreaTracking();
             _gameData = newGameData;
 
             // Each game has its own palette; switch before the atlas is rebuilt from it
@@ -549,6 +551,9 @@ public unsafe partial class GameEngine : IDisposable
             return;
         }
 
+        // Finish the outgoing visit before applying another game's collection flags.
+        CancelSmoothMovement();
+        ResetAreaTracking();
         // Apply save data to game state
         SaveGameManager.ApplyToGameState(saveData, _state);
 
@@ -679,6 +684,8 @@ public unsafe partial class GameEngine : IDisposable
     /// </summary>
     public void StartNewGame()
     {
+        CancelSmoothMovement();
+        ResetAreaTracking();
         _state.Reset();
         ResetPlayerAnimation();
         _messages.Clear();
@@ -926,6 +933,12 @@ public unsafe partial class GameEngine : IDisposable
         }
 
         CancelSmoothMovement();
+        if (!ReferenceEquals(_state.CurrentZone, zone))
+        {
+            ResetUnsolvedArea();
+            _state.Projectiles.Clear();
+        }
+        CaptureInitialArea(zone);
         _state.CurrentZoneId = zoneId;
         _state.CurrentZone = zone;
         _actionExecutor?.ResetForZone();
@@ -1915,6 +1928,7 @@ public unsafe partial class GameEngine : IDisposable
         }
 
         // Pull the block to where the player was standing
+        MarkObjectsMoved(_state.CurrentZone);
         _state.CurrentZone.SetTile(oldPlayerX, oldPlayerY, 1, behindTile);
         _state.CurrentZone.SetTile(behindX, behindY, 1, 0xFFFF);
         _messages.ShowMessage("*pull*", MessageType.Info);
@@ -1987,6 +2001,7 @@ public unsafe partial class GameEngine : IDisposable
                     if (destTile == 0xFFFF)
                     {
                         // Push the block
+                        MarkObjectsMoved(_state.CurrentZone);
                         _state.CurrentZone.SetTile(pushX, pushY, 1, middleTile);
                         _state.CurrentZone.SetTile(newX, newY, 1, 0xFFFF);
                         _messages.ShowMessage("*push*", MessageType.Info);

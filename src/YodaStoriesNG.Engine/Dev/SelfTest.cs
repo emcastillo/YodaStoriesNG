@@ -39,6 +39,7 @@ public static class SelfTest
         failures += Check("mission identity and script variables agree with their readers", MissionScriptState);
         failures += Check("smooth movement, reservations, arrivals and settings", GameEngine.TestSmoothMovement);
         failures += Check("authored weapon poses and blade extensions", WeaponPoses);
+        failures += Check("unsolved moved areas reset while solved areas retain progress", GameEngine.TestAreaReset);
 
         Console.WriteLine(failures == 0 ? "\nSelf-test PASSED" : $"\nSelf-test FAILED ({failures})");
         return failures == 0 ? 0 : 1;
