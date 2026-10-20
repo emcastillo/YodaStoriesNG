@@ -34,6 +34,13 @@ public class ActionExecutor
     }
     private ActionTrigger _currentTrigger;
     private int _currentActionIndex = -1;
+    private bool _enteredByPlane;
+    private bool _zoneWasUninitialized;
+    private int _pendingZoneId = -1;
+    private int _pendingActionIndex = -1;
+    private ActionTrigger _pendingTrigger;
+    private bool _pendingEnteredByPlane;
+    private bool _pendingZoneWasUninitialized;
 
     /// <summary>
     /// When true, dialogue instructions are suppressed.
@@ -66,6 +73,20 @@ public class ActionExecutor
     public List<Instruction>? PendingInstructions { get; set; }
     public int PendingInstructionIndex { get; set; }
 
+    public bool IsBusy => PendingInstructions != null;
+    public (int ZoneId, int X, int Y)? RequestedZoneChange { get; private set; }
+
+    /// <summary>Cancel a suspended script when leaving its zone.</summary>
+    public void ResetForZone()
+    {
+        PendingInstructions = null;
+        PendingInstructionIndex = 0;
+        _pendingZoneId = -1;
+        _pendingActionIndex = -1;
+        _currentActionIndex = -1;
+        RequestedZoneChange = null;
+    }
+
     // Event for displaying dialogue
     public event Action<string, string>? OnDialogue;
     public event Action<string>? OnMessage;
@@ -80,40 +101,59 @@ public class ActionExecutor
     /// <summary>
     /// Executes all applicable actions in the current zone.
     /// </summary>
-    public void ExecuteZoneActions(ActionTrigger trigger)
+    public void ExecuteZoneActions(ActionTrigger trigger, bool enteredByPlane = false)
     {
+        if (RequestedZoneChange.HasValue)
+            return;
         _currentZone = _state.CurrentZone;
         _currentTrigger = trigger;
         if (_currentZone == null)
             return;
 
-        // Resume pending instructions from a previous Wait
-        if (PendingInstructions != null)
-        {
-            var remaining = PendingInstructions;
-            var startIdx = PendingInstructionIndex;
-            PendingInstructions = null;
-            PendingInstructionIndex = 0;
+        if (IsBusy && _pendingZoneId != _currentZone.Id)
+            ResetForZone();
 
-            for (int i = startIdx; i < remaining.Count; i++)
+        _enteredByPlane = trigger == ActionTrigger.ZoneEnter && enteredByPlane;
+        _zoneWasUninitialized = !_state.Variables.ContainsKey(_currentZone.Id + 1000);
+        try
+        {
+            int nextActionIndex = 0;
+            // Resume pending instructions from a previous Wait
+            if (PendingInstructions != null)
             {
-                ExecuteInstruction(remaining[i]);
-                // Check if another Wait was hit
-                if (PendingInstructions != null)
+                var remaining = PendingInstructions;
+                var startIdx = PendingInstructionIndex;
+                _currentActionIndex = _pendingActionIndex;
+                _currentTrigger = trigger = _pendingTrigger;
+                _enteredByPlane = _pendingEnteredByPlane;
+                _zoneWasUninitialized = _pendingZoneWasUninitialized;
+                PendingInstructions = null;
+                PendingInstructionIndex = 0;
+                ExecuteInstructions(remaining, startIdx);
+                if (IsBusy || RequestedZoneChange.HasValue)
                     return;
+                nextActionIndex = _currentActionIndex + 1;
+            }
+
+            for (int i = nextActionIndex; i < _currentZone.Actions.Count; i++)
+            {
+                if (_state.DisabledActions.Contains((_currentZone.Id, i)))
+                    continue;
+                var action = _currentZone.Actions[i];
+                if (EvaluateConditions(action.Conditions, trigger))
+                {
+                    _currentActionIndex = i;
+                    ExecuteInstructions(action.Instructions);
+                    // A paused action owns the interpreter until it finishes. Continuing
+                    // here let another action overwrite its animation and continuation.
+                    if (IsBusy || RequestedZoneChange.HasValue)
+                        return;
+                }
             }
         }
-
-        for (int i = 0; i < _currentZone.Actions.Count; i++)
+        finally
         {
-            if (_state.DisabledActions.Contains((_currentZone.Id, i)))
-                continue;
-            var action = _currentZone.Actions[i];
-            if (EvaluateConditions(action.Conditions, trigger))
-            {
-                _currentActionIndex = i;
-                ExecuteInstructions(action.Instructions);
-            }
+            _enteredByPlane = false;
         }
     }
 
@@ -168,7 +208,7 @@ public class ActionExecutor
         {
             case ConditionOpcode.ZoneNotInitialized:
                 // True on first entry to zone
-                return trigger == ActionTrigger.ZoneEnter && !_state.Variables.ContainsKey(_state.CurrentZoneId + 1000);
+                return trigger == ActionTrigger.ZoneEnter && _zoneWasUninitialized;
 
             case ConditionOpcode.ZoneEntered:
                 return trigger == ActionTrigger.ZoneEnter;
@@ -237,6 +277,11 @@ public class ActionExecutor
                 // -1 asks about the item this sector's puzzle provides
                 if (args[0] == -1 && CurrentSector is { FindItem: >= 0 } findSector)
                     return _state.HasItem(findSector.FindItem);
+                // Dagobah has no generated puzzle sector. Its departure gate asks
+                // whether Luke has collected the item handed out with Yoda's briefing.
+                if (args[0] == -1 && CurrentWorld is { StartingItemId: { } startingItem } world &&
+                    world.DagobahZones.Contains(_state.CurrentZoneId))
+                    return _state.HasItem(startingItem);
                 return _state.HasItem(args[0]);
 
             // Note the argument order: the tile ID comes FIRST and the position after it,
@@ -286,8 +331,8 @@ public class ActionExecutor
             // 0x12 is WebFun's HasGoalItem: the hero holds the item the whole world is about.
             // Worlds from the older generator keep the looser "an item was placed" reading.
             case ConditionOpcode.HasGoalItem:
-                if (CurrentSector != null)
-                    return CurrentWorld?.Mission?.GoalPuzzle is { } goal && _state.HasItem(goal.Item1);
+                if (CurrentMission?.GoalPuzzle is { } goal)
+                    return _state.HasItem(goal.Item1);
                 return PlacedItemId.HasValue;
 
             case ConditionOpcode.DroppedItemIs:
@@ -336,10 +381,9 @@ public class ActionExecutor
                     return CurrentMission.CurrentPuzzleStep.RewardItemId == args[0];
                 return _state.HasItem(args[0]);  // Fallback
 
-            // Only during the arrival pass (WebFun EvaluationMode.ByPlane): "have an X-Wing
-            // here" stays true the whole visit and re-ran landing cutscenes every frame.
+            // Only run landing cutscenes when the engine explicitly loaded this zone by plane.
             case ConditionOpcode.EnterByPlane:
-                return trigger == ActionTrigger.ZoneEnter && (_state.XWingPosition.HasValue || _state.ArrivingByVehicle);
+                return trigger == ActionTrigger.ZoneEnter && (_enteredByPlane || _state.ArrivingByVehicle);
 
             case ConditionOpcode.HeroIsAt:
                 // Check if hero is at position
@@ -354,9 +398,12 @@ public class ActionExecutor
                 return PlacedItemId != args[0];
 
             case ConditionOpcode.EndingIs:
-                // Check if arg matches current goal puzzle's item (last step's required item)
+                // Ending identifies the mission itself. The final sector's required
+                // item is a prerequisite used to obtain the mission item, not its identity.
                 if (args.Count < 1)
                     return false;
+                if (CurrentMission?.GoalPuzzle is { } ending)
+                    return ending.Item1 == args[0];
                 if (CurrentMission != null && CurrentMission.PuzzleChain.Count > 0)
                 {
                     var lastStep = CurrentMission.PuzzleChain[^1];
@@ -411,23 +458,30 @@ public class ActionExecutor
         }
     }
 
-    private void ExecuteInstructions(List<Instruction> instructions)
+    private void ExecuteInstructions(List<Instruction> instructions, int startIndex = 0)
     {
-        if (instructions.Count > 0)
+        if (instructions.Count > 0 && startIndex == 0)
         {
             Console.WriteLine($"  Executing {instructions.Count} instructions");
         }
 
-        for (int i = 0; i < instructions.Count; i++)
+        for (int i = startIndex; i < instructions.Count; i++)
         {
             if (instructions[i].Opcode == InstructionOpcode.Wait)
             {
                 // Save remaining instructions to resume next tick
                 PendingInstructions = instructions;
                 PendingInstructionIndex = i + 1;
+                _pendingZoneId = _currentZone!.Id;
+                _pendingActionIndex = _currentActionIndex;
+                _pendingTrigger = _currentTrigger;
+                _pendingEnteredByPlane = _enteredByPlane;
+                _pendingZoneWasUninitialized = _zoneWasUninitialized;
                 return;
             }
             ExecuteInstruction(instructions[i]);
+            if (RequestedZoneChange.HasValue)
+                return;
         }
     }
 
@@ -464,16 +518,9 @@ public class ActionExecutor
                 break;
 
             case InstructionOpcode.SetVariable:
-                // XOR addressing: key = arg0 ^ arg1 ^ arg2, set to arg3
-                if (args.Count >= 4)
-                {
-                    int setVarKey = args[0] ^ args[1] ^ args[2];
-                    _state.SetVariable(setVarKey, args[3]);
-                }
-                else if (args.Count >= 2)
-                {
-                    _state.SetVariable(args[0], args[1]);  // Fallback for 2-arg form
-                }
+                // Variables live in zone tile slots, exactly where IsVariable reads.
+                if (args.Count >= 4 && _currentZone != null)
+                    _currentZone.SetTile(args[0], args[1], args[2], (ushort)args[3]);
                 break;
 
             case InstructionOpcode.AddItem:
@@ -503,9 +550,9 @@ public class ActionExecutor
             case InstructionOpcode.ChangeZone:
                 if (args.Count >= 3)
                 {
-                    _state.CurrentZoneId = args[0];
-                    _state.PlayerX = args[1];
-                    _state.PlayerY = args[2];
+                    // The engine must load the destination's tiles, actors and scripts
+                    // together. Changing only the ID left the old map and a hidden hero.
+                    RequestedZoneChange = (args[0], args[1], args[2]);
                 }
                 break;
 
@@ -692,10 +739,8 @@ public class ActionExecutor
                     int idx = args[0];
                     if (idx >= 0 && idx < _currentZone.Objects.Count)
                     {
-                        // Hotspots are typically zone objects - enable by restoring their tile
                         var obj = _currentZone.Objects[idx];
-                        if (obj.Argument > 0)
-                            _currentZone.SetTile(obj.X, obj.Y, 1, (ushort)obj.Argument);
+                        obj.Enabled = true;
                     }
                 }
                 break;
@@ -708,8 +753,7 @@ public class ActionExecutor
                     if (idx >= 0 && idx < _currentZone.Objects.Count)
                     {
                         var obj = _currentZone.Objects[idx];
-                        // Remove the tile
-                        _currentZone.SetTile(obj.X, obj.Y, 1, 0xFFFF);
+                        obj.Enabled = false;
                     }
                 }
                 break;

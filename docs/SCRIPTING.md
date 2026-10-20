@@ -319,8 +319,18 @@ the format has.
 - **`ConditionOpcode` and `InstructionOpcode` declare members past the real range** -
   conditions `0x24`, `0x25`, `0x30` and instructions `0x26` to `0x28`. No data file contains
   them; they are engine-internal and can never fire from parsed script data.
-- **`Wait` does not actually suspend the script.** The executor runs an action's instructions
-  to completion within one frame.
+- **`Wait` suspends the current action until the next script tick.** The continuation keeps
+  its zone, action index, and entry mode; other actions wait for it to finish. Leaving the
+  zone cancels it. Hotspot enable/disable changes the hotspot flag without changing map
+  tiles. Scripted `ChangeZone` requests a complete engine zone load.
+
+Yoda's X-wing is assembled and animated by the original zone scripts. Takeoff ends by
+moving the hidden hero onto an enabled travel hotspot; the engine completes the trip after
+the script finishes. Run `--xwing-audit Yoda/yodesk.dta` to replay repeated trips to all
+three planets without creating a game window, checking hero visibility and ship tile counts.
+The audit also generates worlds until it covers every mission type, including the medical
+station detour. `EndingIs` uses the Mission puzzle's item, which differs from the final
+sector's prerequisite. `SetVariable` writes the tile slot read by `IsVariable`.
 
 If you are extending the script engine, `webfun-reference/src/engine/script/` is the file to
 read: one small module per opcode, each with the original's semantics in about ten lines.

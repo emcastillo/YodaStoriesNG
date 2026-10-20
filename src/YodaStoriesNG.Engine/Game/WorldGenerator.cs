@@ -282,7 +282,7 @@ public class WorldGenerator
     /// </summary>
     public WorldMap GenerateWorld(WorldSize size)
     {
-        if (_gameData.GameType == GameType.IndianaJones)
+        if (_gameData.GameType == GameType.IndianaJones || _gameData.GameType == GameType.YodaStories)
             return GenerateOriginalWorld(size);
 
         // Set grid size based on world size
@@ -337,13 +337,16 @@ public class WorldGenerator
 
         OriginalWorldGenerator? generator = null;
         int seed = 0;
+        var missionPlanet = _gameData.GameType == GameType.IndianaJones
+            ? Planet.None
+            : new[] { Planet.Desert, Planet.Snow, Planet.Forest }[_random.Next(3)];
         for (int attempt = 1; generator == null; attempt++)
         {
             seed = seeds.Next();
             var candidate = new OriginalWorldGenerator(_gameData, seed);
             try
             {
-                candidate.Generate(Planet.None, size);
+                candidate.Generate(missionPlanet, size);
                 generator = candidate;
             }
             catch (WorldGenerationException ex) when (attempt < 50)
@@ -370,7 +373,7 @@ public class WorldGenerator
 
         var world = new WorldMap
         {
-            Planet = Planet.None,
+            Planet = missionPlanet,
             Seed = seed,
             Grid = new int?[10, 10],
             TypeMap = new SectorType[10, 10],
@@ -395,7 +398,11 @@ public class WorldGenerator
 
             if (sector.Type == ZoneType.Town)
             {
-                world.StartingZoneId = world.LandingZoneId = sector.Zone;
+                // Indy starts in the town. Yoda starts on Dagobah and flies from there
+                // to the generated planet's spaceport.
+                if (_gameData.GameType == GameType.IndianaJones)
+                    world.StartingZoneId = sector.Zone;
+                world.LandingZoneId = sector.Zone;
                 world.LandingPosition = (x, y);
             }
             if (sector.Type == ZoneType.Goal)
@@ -411,7 +418,15 @@ public class WorldGenerator
 
         world.Strain1 = generator.Strain1ByIndex;
         world.Strain2 = generator.Strain2ByIndex;
-        world.Mission = CurrentMission = BuildOriginalMission(generator);
+        world.Mission = CurrentMission = BuildOriginalMission(generator, missionPlanet);
+        world.Mission.MissionNumber = _currentMissionNumber;
+        world.MissionNumber = _currentMissionNumber;
+        if (_gameData.GameType == GameType.YodaStories)
+        {
+            GenerateDagobah();
+            world.XWingZoneId = world.StartingZoneId;
+            SetupItemChain();
+        }
         LogMissionDetails(CurrentMission);
         world.PrintMapVisualization();
         return world;
@@ -421,7 +436,7 @@ public class WorldGenerator
     /// The puzzle chain in the order it is played: find the first item, then each puzzle
     /// sector by index, ending at the goal zone that hands over the mission's item.
     /// </summary>
-    private Mission BuildOriginalMission(OriginalWorldGenerator generator)
+    private Mission BuildOriginalMission(OriginalWorldGenerator generator, Planet planet)
     {
         var goal = generator.GoalPuzzle;
         string Text(Puzzle p, params int[] order) =>
@@ -430,15 +445,13 @@ public class WorldGenerator
         var mission = new Mission
         {
             Id = goal.Id,
-            Name = GetItemName(goal.Item1),
-            Planet = Planet.None,
+            Name = Text(goal, 0) is { Length: > 0 } name ? name : GetItemName(goal.Item1),
+            Planet = planet,
             Description = Text(goal, 2, 3, 0),
             GoalPuzzle = goal,
         };
 
         var steps = generator.Sectors.Where(s => s.PuzzleIndex >= 0 && s.Zone >= 0).OrderBy(s => s.PuzzleIndex).ToList();
-        var strain = generator.Strain1;
-
         int firstItem = steps.Count > 0 ? steps[0].RequiredItem : -1;
         var town = generator.Sectors.FirstOrDefault(s => s.Type == ZoneType.Town);
         var finder = generator.Sectors.FirstOrDefault(s => s.Type == ZoneType.Find && s.FindItem == firstItem && firstItem >= 0);
@@ -461,6 +474,7 @@ public class WorldGenerator
 
         foreach (var sector in steps)
         {
+            var strain = sector.UsedAlternateStrain ? generator.Strain1ByIndex : generator.Strain2ByIndex;
             var puzzle = sector.PuzzleIndex < strain.Count ? strain[sector.PuzzleIndex] : goal;
             mission.PuzzleChain.Add(new PuzzleStep
             {
@@ -1254,6 +1268,13 @@ public class WorldGenerator
                 CurrentWorld.StartingItemId = firstStep.RequiredItemId;
                 var itemName = GetItemName(firstStep.RequiredItemId);
                 Console.WriteLine($"Starting item: {itemName} (Tile {firstStep.RequiredItemId})");
+            }
+            else if (_gameData.GameType == GameType.YodaStories && firstStep.RewardItemId > 0)
+            {
+                // Yoda hands Luke the first authored quest item before he leaves Dagobah.
+                CurrentWorld.StartingItemId = firstStep.RewardItemId;
+                var itemName = GetItemName(firstStep.RewardItemId);
+                Console.WriteLine($"Yoda's mission item: {itemName} (Tile {firstStep.RewardItemId})");
             }
         }
 

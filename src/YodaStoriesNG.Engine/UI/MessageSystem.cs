@@ -46,7 +46,8 @@ public class MessageSystem
         {
             MessageType.Pickup => PickupMessageDuration,
             MessageType.Combat => CombatMessageDuration,
-            MessageType.Dialogue => 5.0,
+            // Keep longer mission briefings on screen long enough to read.
+            MessageType.Dialogue => Math.Clamp(5.0 + text.Length / 18.0, 5.0, 25.0),
             _ => DefaultMessageDuration
         };
 
