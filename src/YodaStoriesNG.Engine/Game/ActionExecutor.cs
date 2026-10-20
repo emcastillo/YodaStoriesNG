@@ -573,6 +573,18 @@ public class ActionExecutor
         _pendingHandledItemPlacement = HandledItemPlacement;
     }
 
+    private string ResolveDialogueText(string text)
+    {
+        var sector = CurrentSector;
+        var step = CurrentMission?.CurrentPuzzleStep;
+        int provided = sector?.FindItem ?? step?.RewardItemId ?? -1;
+        int required = sector?.RequiredItem ?? step?.RequiredItemId ?? -1;
+        // Find-only rooms may use either token for their single generated reward.
+        if (required < 0) required = provided;
+        if (provided < 0) provided = required;
+        return DialogueText.Resolve(_gameData, text, provided, required);
+    }
+
     private string DialogueSpeaker(List<short> args)
     {
         // SpeakNpc stores map coordinates, not a character index.
@@ -795,7 +807,7 @@ public class ActionExecutor
                 // Script conditions decide when speech happens, including bumps and walking.
                 if (!string.IsNullOrEmpty(instruction.Text) && !SuppressDialogue)
                 {
-                    OnDialogue?.Invoke("Luke", instruction.Text);
+                    OnDialogue?.Invoke("Luke", ResolveDialogueText(instruction.Text));
                 }
                 break;
 
@@ -804,7 +816,7 @@ public class ActionExecutor
                 // Script conditions decide when speech happens, including bumps and walking.
                 if (!string.IsNullOrEmpty(instruction.Text) && !SuppressDialogue)
                 {
-                    OnDialogue?.Invoke(DialogueSpeaker(args), instruction.Text);
+                    OnDialogue?.Invoke(DialogueSpeaker(args), ResolveDialogueText(instruction.Text));
                 }
                 break;
 

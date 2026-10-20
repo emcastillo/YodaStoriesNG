@@ -126,7 +126,7 @@ public class SectorPuzzles
         var text = sector.Solved
             ? Line(puzzle, 1)
             : string.Join(" ", new[] { Line(puzzle, 0), next != null ? Line(next, 2) : "" }.Where(t => t.Length > 0));
-        if (text.Length > 0) OnSpeak?.Invoke(NameOf(sector.Npc), text);
+        if (text.Length > 0) Speak(NameOf(sector.Npc), text);
         return true;
     }
 
@@ -145,14 +145,14 @@ public class SectorPuzzles
 
         if (!town.Solved)
         {
-            OnSpeak?.Invoke("Marcus", Line(goal, 3));
+            Speak("Marcus", Line(goal, 3));
             int first = _world.Mission.PuzzleChain.FirstOrDefault()?.RewardItemId ?? 0;
             if (first > 0) _state.AddItem(first);
             SetSolved(town);
         }
         else
         {
-            OnSpeak?.Invoke("Marcus", Line(goal, 2));
+            Speak("Marcus", Line(goal, 2));
         }
         return true;
     }
@@ -184,7 +184,7 @@ public class SectorPuzzles
             if (zone.GetTile(x, y, 1) != sector.Npc || hotspot == null) return NoGo();
 
             _state.RemoveItem(item);
-            OnSpeak?.Invoke(NameOf(sector.Npc), Line(puzzle, 1));
+            Speak(NameOf(sector.Npc), Line(puzzle, 1));
             // Handed straight over - WebFun's "pick up items automatically" behaviour.
             if (sector.FindItem >= 0) _state.AddItem(sector.FindItem);
             SetSolved(sector);
@@ -229,5 +229,12 @@ public class SectorPuzzles
     }
 
     private static string Line(Puzzle p, int i) => i < p.Strings.Count ? p.Strings[i].Trim() : "";
+    private void Speak(string speaker, string text)
+    {
+        int provided = Sector?.FindItem ?? -1, required = Sector?.RequiredItem ?? -1;
+        if (required < 0) required = provided;
+        if (provided < 0) provided = required;
+        OnSpeak?.Invoke(speaker, DialogueText.Resolve(_data, text, provided, required));
+    }
     private string NameOf(int tile) => _data.TileNames.GetValueOrDefault(tile) ?? "";
 }
